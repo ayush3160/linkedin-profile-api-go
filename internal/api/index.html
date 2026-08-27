@@ -1,0 +1,61 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>LinkedIn Profile API</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { color-scheme: light dark; --fg: #16181d; --bg: #fff; --muted: #5b6270;
+          --line: #e3e6ea; --code-bg: #f5f6f8; --accent: #0a66c2; }
+  @media (prefers-color-scheme: dark) {
+    :root { --fg: #e8eaed; --bg: #14161a; --muted: #9aa2b1; --line: #2a2e36;
+            --code-bg: #1c1f25; --accent: #6cb2f0; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0 auto; padding: 3rem 1.25rem 6rem; max-width: 52rem; background: var(--bg);
+         color: var(--fg); font: 16px/1.65 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+  h1 { font-size: 1.6rem; margin: 0 0 .35rem; letter-spacing: -.02em; }
+  h2 { font-size: 1.05rem; margin: 2.5rem 0 .75rem; letter-spacing: -.01em; }
+  p.lede { color: var(--muted); margin: 0 0 2rem; }
+  code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .875rem; }
+  pre { background: var(--code-bg); border: 1px solid var(--line); border-radius: 8px;
+        padding: .9rem 1rem; overflow-x: auto; }
+  code:not(pre code) { background: var(--code-bg); border-radius: 4px; padding: .1em .35em; }
+  table { border-collapse: collapse; width: 100%; font-size: .9rem; display: block; overflow-x: auto; }
+  th, td { text-align: left; padding: .5rem .75rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; white-space: nowrap; }
+  a { color: var(--accent); }
+  .ep { font-weight: 600; }
+</style>
+
+<h1>LinkedIn Profile API</h1>
+<p class="lede">Give it a LinkedIn profile URL, get structured JSON back.
+Machine-readable schema at <a href="/openapi.json">/openapi.json</a>.</p>
+
+<h2>Endpoints</h2>
+<table>
+  <tr><th>Endpoint</th><th>Purpose</th></tr>
+  <tr><td class="ep">GET /profile</td><td>Profile as structured JSON</td></tr>
+  <tr><td class="ep">GET /raw</td><td>Semantic outline before field mapping (debug)</td></tr>
+  <tr><td class="ep">GET /health</td><td>Liveness and session status</td></tr>
+</table>
+
+<h2>Parameters</h2>
+<table>
+  <tr><th>Name</th><th>Default</th><th>Description</th></tr>
+  <tr><td><code>url</code></td><td>required</td><td>Profile URL, <code>/in/&lt;name&gt;</code> path, or bare vanity name</td></tr>
+  <tr><td><code>include_activity</code></td><td><code>false</code></td><td>Also fetch recent posts (adds several MB)</td></tr>
+  <tr><td><code>refresh</code></td><td><code>false</code></td><td>Bypass the cache</td></tr>
+</table>
+<p>Send <code>X-API-Key</code> only if the deployment sets <code>API_KEYS</code>.</p>
+
+<h2>Example</h2>
+<pre>curl "$HOST/profile?url=https://www.linkedin.com/in/williamhgates/"</pre>
+
+<h2>Errors</h2>
+<p>Every error is <code>{"error", "code", "detail"}</code>.
+<code>503 session_expired</code> means the backing LinkedIn cookies need refreshing.</p>
+
+<h2>Notes</h2>
+<p>Fields are omitted when the page did not render them &mdash; absent is not the same as
+&ldquo;the member has none&rdquo;. What renders depends on the backing account&rsquo;s network
+distance to the member. <code>meta</code> reports which cards came back and which sections
+were recognised.</p>

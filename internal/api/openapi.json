@@ -1,0 +1,148 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "LinkedIn Profile API",
+    "version": "1.0.0",
+    "description": "Structured JSON for a LinkedIn profile URL, read through flagship-web's React Server Components endpoints."
+  },
+  "paths": {
+    "/profile": {
+      "get": {
+        "summary": "Fetch a profile as structured JSON",
+        "parameters": [
+          {"name": "url", "in": "query", "required": true, "schema": {"type": "string"},
+           "description": "Profile URL, /in/<name> path, or bare vanity name",
+           "example": "https://www.linkedin.com/in/williamhgates/"},
+          {"name": "include_activity", "in": "query", "schema": {"type": "boolean", "default": false},
+           "description": "Also fetch recent posts (adds several MB)"},
+          {"name": "refresh", "in": "query", "schema": {"type": "boolean", "default": false},
+           "description": "Bypass the cache"}
+        ],
+        "responses": {
+          "200": {"description": "Profile", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ProfileResponse"}}}},
+          "400": {"description": "Malformed profile URL", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "401": {"description": "Missing or invalid X-API-Key", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "404": {"description": "Profile not found", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "429": {"description": "Client rate limit exceeded", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "502": {"description": "Upstream error", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "503": {"description": "LinkedIn session unusable", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}
+        }
+      }
+    },
+    "/raw": {
+      "get": {
+        "summary": "Semantic outline before field mapping (debug)",
+        "parameters": [{"name": "url", "in": "query", "required": true, "schema": {"type": "string"}}],
+        "responses": {"200": {"description": "Outline"}}
+      }
+    },
+    "/health": {
+      "get": {
+        "summary": "Liveness and session status",
+        "responses": {"200": {"description": "Health", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Health"}}}}}
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "ApiKeyAuth": {"type": "apiKey", "in": "header", "name": "X-API-Key"}
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": {"type": "string"},
+          "code": {"type": "string", "enum": ["invalid_profile_url", "unauthorized", "profile_not_found", "rate_limited", "upstream_error", "unparseable_response", "session_expired", "upstream_rate_limited"]},
+          "detail": {"type": "string"}
+        }
+      },
+      "Health": {
+        "type": "object",
+        "properties": {
+          "status": {"type": "string"},
+          "version": {"type": "string"},
+          "session_configured": {"type": "boolean"},
+          "cache_entries": {"type": "integer"},
+          "uptime_seconds": {"type": "integer"}
+        }
+      },
+      "Rendition": {
+        "type": "object",
+        "properties": {"width": {"type": "integer"}, "height": {"type": "integer"}, "url": {"type": "string"}}
+      },
+      "Image": {
+        "type": "object",
+        "properties": {
+          "url": {"type": "string"}, "asset_urn": {"type": "string"}, "label": {"type": "string"},
+          "renditions": {"type": "array", "items": {"$ref": "#/components/schemas/Rendition"}}
+        }
+      },
+      "DateRange": {
+        "type": "object",
+        "properties": {
+          "text": {"type": "string"}, "start": {"type": "string"}, "end": {"type": "string"},
+          "is_current": {"type": "boolean"}, "duration": {"type": "string"}
+        }
+      },
+      "Entity": {
+        "type": "object",
+        "properties": {
+          "title": {"type": "string"}, "subtitle": {"type": "string"},
+          "employment_type": {"type": "string"},
+          "date_range": {"$ref": "#/components/schemas/DateRange"},
+          "location": {"type": "string"}, "description": {"type": "string"},
+          "logo": {"$ref": "#/components/schemas/Image"},
+          "links": {"type": "array", "items": {"type": "string"}},
+          "raw_lines": {"type": "array", "items": {"type": "string"},
+            "description": "Every text line of this entity in page order, before mapping"}
+        }
+      },
+      "Profile": {
+        "type": "object",
+        "description": "Every field is optional. Absent means the page we were served did not render it, which is not the same as the member having none.",
+        "properties": {
+          "profile_url": {"type": "string"}, "vanity_name": {"type": "string"},
+          "profile_id": {"type": "string"}, "name": {"type": "string"},
+          "headline": {"type": "string"}, "location": {"type": "string"},
+          "about": {"type": "string"}, "connections": {"type": "string"},
+          "followers": {"type": "string"}, "network_distance": {"type": "string"},
+          "is_verified": {"type": "boolean"}, "open_to_work": {"type": "boolean"},
+          "profile_picture": {"$ref": "#/components/schemas/Image"},
+          "background_image": {"$ref": "#/components/schemas/Image"},
+          "experience": {"type": "array", "items": {"$ref": "#/components/schemas/Entity"}},
+          "education": {"type": "array", "items": {"$ref": "#/components/schemas/Entity"}},
+          "certifications": {"type": "array", "items": {"$ref": "#/components/schemas/Entity"}},
+          "projects": {"type": "array", "items": {"$ref": "#/components/schemas/Entity"}},
+          "volunteering": {"type": "array", "items": {"$ref": "#/components/schemas/Entity"}},
+          "publications": {"type": "array", "items": {"$ref": "#/components/schemas/Entity"}},
+          "honors": {"type": "array", "items": {"$ref": "#/components/schemas/Entity"}},
+          "courses": {"type": "array", "items": {"$ref": "#/components/schemas/Entity"}},
+          "organizations": {"type": "array", "items": {"$ref": "#/components/schemas/Entity"}},
+          "recommendations": {"type": "array", "items": {"$ref": "#/components/schemas/Entity"}},
+          "skills": {"type": "array", "items": {"type": "object", "properties": {"name": {"type": "string"}, "detail": {"type": "string"}}}},
+          "languages": {"type": "array", "items": {"type": "object", "properties": {"name": {"type": "string"}, "proficiency": {"type": "string"}}}},
+          "interests": {"type": "array", "items": {"type": "string"}},
+          "other_sections": {"type": "array", "items": {"type": "object"}}
+        }
+      },
+      "Meta": {
+        "type": "object",
+        "properties": {
+          "cards_returned": {"type": "array", "items": {"type": "string"}},
+          "cards_failed": {"type": "array", "items": {"type": "string"}},
+          "sections_found": {"type": "array", "items": {"type": "string"}},
+          "bytes_downloaded": {"type": "integer"}, "duration_ms": {"type": "integer"},
+          "cached": {"type": "boolean"},
+          "warnings": {"type": "array", "items": {"type": "string"}}
+        }
+      },
+      "ProfileResponse": {
+        "type": "object",
+        "properties": {
+          "profile": {"$ref": "#/components/schemas/Profile"},
+          "meta": {"$ref": "#/components/schemas/Meta"}
+        }
+      }
+    }
+  }
+}

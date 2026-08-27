@@ -1,0 +1,8 @@
+.env
+.env.*
+*.har
+*.flight
+bin/
+dump/
+cookies.json
+.DS_Store

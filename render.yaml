@@ -1,0 +1,20 @@
+# Render blueprint. Push the repo, then New > Blueprint and pick it.
+# Set LI_AT and LI_JSESSIONID in the dashboard -- sync:false keeps them out of
+# this file. HTTPS is provisioned automatically.
+services:
+  - type: web
+    name: linkedin-profile-api
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: LI_AT
+        sync: false
+      - key: LI_JSESSIONID
+        sync: false
+      - key: API_KEYS
+        sync: false
+      - key: CACHE_TTL_SECONDS
+        value: "3600"
+      - key: LOG_LEVEL
+        value: info
