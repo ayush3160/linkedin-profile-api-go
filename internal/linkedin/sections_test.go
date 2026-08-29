@@ -1,6 +1,9 @@
 package linkedin
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestParseDates(t *testing.T) {
 	tests := []struct {
@@ -244,5 +247,80 @@ func TestEndorsementCountIsNeverASkillName(t *testing.T) {
 	}
 	if len(skills) != 2 || names[0] != "Marketing Strategy" || names[1] != "Entrepreneurship" {
 		t.Fatalf("skill names = %v, want [Marketing Strategy Entrepreneurship]", names)
+	}
+}
+
+// The Licenses & certifications card holds its content in the card's own text,
+// with attachment buttons hanging off it whose text is a PDF file name. Those
+// buttons looked like list rows, so the card reported the attachments and
+// skipped the certificates entirely.
+func TestCertificationsComeFromTheCardNotItsAttachments(t *testing.T) {
+	section := &Block{
+		Name:     "profile-card-licenses-and-certifications",
+		Headings: []string{"Licenses & certifications"},
+		Texts: []string{
+			"Licenses & certifications",
+			"TCS-ION Career Edge - Young Professional", "TCS iON", "Issued Jan 2024",
+			"TCS ION (Business Etiquette)", "Issued Dec 2023", "Credential ID 66794256907341016",
+		},
+		Children: []*Block{
+			{Name: "license-certifications-lockup-view"},
+			{Name: "license-certifications-media-button", Texts: []string{"TCS-ION(Career Edge).pdf"}},
+			{Name: "license-certifications-media-button", Texts: []string{"BUSINESS ETIQUETTE.pdf"}},
+		},
+	}
+	entities := ParseEntities(section)
+	if len(entities) != 2 {
+		t.Fatalf("entities = %d, want 2: %+v", len(entities), entities)
+	}
+	if entities[0].Title != "TCS-ION Career Edge - Young Professional" || entities[0].Subtitle != "TCS iON" {
+		t.Errorf("row 0 = %q / %q", entities[0].Title, entities[0].Subtitle)
+	}
+	if entities[0].DateRange == nil || entities[0].DateRange.Text != "Issued Jan 2024" {
+		t.Errorf("row 0 date = %+v", entities[0].DateRange)
+	}
+	// A credential id is metadata, not an issuer.
+	if entities[1].Subtitle != "" {
+		t.Errorf("row 1 subtitle = %q, want empty", entities[1].Subtitle)
+	}
+	if !strings.Contains(entities[1].Description, "Credential ID") {
+		t.Errorf("row 1 description = %q, want the credential id", entities[1].Description)
+	}
+}
+
+// A job description follows the date that closed its row, so it arrived at the
+// head of the next row and opened a job of its own.
+func TestJobDescriptionStaysWithItsRole(t *testing.T) {
+	section := &Block{
+		Name:     "profile-card-experience",
+		Headings: []string{"Experience"},
+		Texts: []string{
+			"Experience",
+			"Business Analyst", "Basiq360 · Full-time", "Mar 2024 - Present · 2 yrs",
+			"Faridabad, Haryana, India · On-site",
+			"Managed day-to-day client interactions, addressing technical issues and new development",
+			"• Translated client requirements into technical instructions.",
+		},
+		Children: []*Block{
+			{Name: "experience-see-media-button", Texts: []string{"Offer Letter.pdf", "OFFER LETTER"}},
+		},
+	}
+	entities := ParseEntities(section)
+	if len(entities) != 1 {
+		t.Fatalf("entities = %d, want 1: %+v", len(entities), entities)
+	}
+	if entities[0].Title != "Business Analyst" {
+		t.Errorf("title = %q", entities[0].Title)
+	}
+	if !strings.Contains(entities[0].Description, "Translated client requirements") {
+		t.Errorf("description = %q", entities[0].Description)
+	}
+}
+
+func TestStyleTokensAreNotContent(t *testing.T) {
+	for _, token := range []string{"icon", "inlineBlock", "img", "logoBrand", "true", "button"} {
+		if !IsNoise(token) {
+			t.Errorf("IsNoise(%q) = false -- style tokens opened rows titled %q", token, token)
+		}
 	}
 }

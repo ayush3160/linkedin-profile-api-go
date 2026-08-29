@@ -511,7 +511,7 @@ static `CGO_ENABLED=0` binary, so it runs as non-root with no shell and no libc.
 ## Testing
 
 ```bash
-make test     # 79 tests
+make test     # 82 tests
 make race     # same, under the race detector
 make lint     # gofmt + go vet
 ```

@@ -96,6 +96,11 @@ var noise = map[string]bool{
 	"…see more": true, "see more": true, "show all": true, "show less": true,
 	"…more": true, "more": true, "·": true, "•": true, "|": true, "": true,
 	"loading": true, "endorse": true, "add": true, "edit": true,
+	// SDUI renders layout and icon hints as text nodes. On the Experience card
+	// these opened rows titled "icon" with a subtitle of "inlineBlock".
+	"img": true, "icon": true, "logobrand": true, "inlineblock": true,
+	"blockquote": true, "center": true, "horizontal": true, "vertical": true,
+	"button": true, "true": true, "false": true,
 }
 
 var noisePrefixes = [...]string{"show all ", "see all ", "view all ", "loading "}
@@ -158,6 +163,28 @@ func ParseDates(line string) *model.DateRange {
 		return &model.DateRange{Text: line, Start: strings.TrimSpace(match[1])}
 	}
 	return nil
+}
+
+// credentialLine matches the metadata LinkedIn renders under a certificate.
+var credentialLine = regexp.MustCompile(`(?i)^credential (id|url)\b|^show credential`)
+
+// continuesPreviousRow reports whether a line belongs to the row before it
+// rather than opening a new one.
+//
+// Everything a row renders after its date behaves this way. Prose is
+// recognised by shape -- a bullet, a sentence ending, or a length no title
+// has -- which keeps a short standalone entry like "Lakeside School" opening
+// its own row.
+func continuesPreviousRow(line string) bool {
+	switch {
+	case LooksLikeLocation(line), credentialLine.MatchString(line):
+		return true
+	case strings.HasPrefix(line, "•"), strings.HasPrefix(line, "- "):
+		return true
+	case strings.HasSuffix(line, "."), len([]rune(line)) > 80:
+		return true
+	}
+	return false
 }
 
 // closesRow reports whether a line ends the list row it belongs to.
@@ -273,10 +300,45 @@ func EntityBlocks(section *Block) []*Block {
 	return rows
 }
 
+// rowChrome names blocks that sit inside a section but are not list rows: the
+// button for an attached document, a company logo link. Their text is a file
+// name, so treating them as rows made Experience report
+// "Confirmation of Internship Offer.pdf" as a job and Licenses report the
+// attachment names instead of the certificates -- while the real content, held
+// in the card's own text, was skipped because these children looked like rows.
+var rowChrome = [...]string{"media-button", "logo-click", "see-media"}
+
+func isRowChrome(name string) bool {
+	lowered := strings.ToLower(name)
+	for _, chrome := range rowChrome {
+		if strings.Contains(lowered, chrome) {
+			return true
+		}
+	}
+	return false
+}
+
+// contentTexts is AllTexts minus the chrome subtrees. A section's own flat
+// list has to exclude the attachment buttons hanging off it, or their file
+// names join the list and become entities of their own.
+func contentTexts(block *Block) []string {
+	out := append([]string(nil), block.Texts...)
+	for _, child := range block.Children {
+		if isRowChrome(child.Name) {
+			continue
+		}
+		out = append(out, contentTexts(child)...)
+	}
+	return out
+}
+
 // collectRows descends past wrappers to the level that holds several rows.
 func collectRows(parent *Block) []*Block {
 	var rows []*Block
 	for _, child := range parent.Children {
+		if isRowChrome(child.Name) {
+			continue
+		}
 		if len(CleanLines(child.AllTexts())) == 0 {
 			continue
 		}
@@ -318,12 +380,19 @@ func ParseEntity(block *Block) (model.Entity, bool) {
 
 	entity := model.Entity{RawLines: append([]string(nil), lines...)}
 	remaining := make([]string, 0, len(lines))
+	var credentials []string
 	for _, line := range lines {
 		if entity.DateRange == nil {
 			if dates := ParseDates(line); dates != nil {
 				entity.DateRange = dates
 				continue
 			}
+		}
+		// A credential id is metadata, not the issuer. Left in place it takes
+		// the subtitle slot on any certificate that renders no issuer line.
+		if credentialLine.MatchString(line) {
+			credentials = append(credentials, line)
+			continue
 		}
 		remaining = append(remaining, line)
 	}
@@ -349,6 +418,12 @@ func ParseEntity(block *Block) (model.Entity, bool) {
 	}
 	if len(remaining) > 0 {
 		entity.Description = strings.Join(remaining, "\n")
+	}
+	if len(credentials) > 0 {
+		if entity.Description != "" {
+			entity.Description += "\n"
+		}
+		entity.Description += strings.Join(credentials, "\n")
 	}
 
 	if images := block.AllImages(); len(images) > 0 {
@@ -396,7 +471,7 @@ func ParseEntities(section *Block) []model.Entity {
 // LinkedIn ever inlines them the trailing lines would attach to the following
 // row; meta.warnings and raw_lines are the signal that has happened.
 func parseFlatEntities(section *Block) []model.Entity {
-	lines := withoutHeadings(CleanLines(section.AllTexts()))
+	lines := withoutHeadings(CleanLines(contentTexts(section)))
 	if len(lines) == 0 {
 		return nil
 	}
@@ -414,16 +489,24 @@ func parseFlatEntities(section *Block) []model.Entity {
 		rows = append(rows, current)
 	}
 
-	// A date closes a row, but a location is rendered after it -- so a row's
-	// trailing location lands at the head of the next one, where it would be
-	// read as that row's title. Satya Nadella's Microsoft location became the
-	// job title of his next role. Hand such a leading location back.
+	// A date closes a row, but location, description and credential lines are
+	// rendered after it -- so a row's tail lands at the head of the next one,
+	// where the first of them would be read as that row's title. Satya
+	// Nadella's Microsoft location became the job title of his next role, and a
+	// job description became a job of its own. Hand those lines back.
 	for i := 1; i < len(rows); i++ {
-		for len(rows[i]) > 1 && LooksLikeLocation(rows[i][0]) {
+		for len(rows[i]) > 0 && continuesPreviousRow(rows[i][0]) {
 			rows[i-1] = append(rows[i-1], rows[i][0])
 			rows[i] = rows[i][1:]
 		}
 	}
+	kept := rows[:0]
+	for _, row := range rows {
+		if len(row) > 0 {
+			kept = append(kept, row)
+		}
+	}
+	rows = kept
 
 	// Logos are siblings of the text, one per row and in the same order.
 	logos := make([]Image, 0, len(rows))
