@@ -130,3 +130,37 @@ func decodeValue(dec *json.Decoder) (any, error) {
 	}
 	return nil, fmt.Errorf("unexpected delimiter %v", delim)
 }
+
+// MarshalJSON writes the object back out with its keys in their original
+// order.
+//
+// Object keeps its keys and values in unexported fields, so without this the
+// encoder finds nothing to write and emits "{}". That is silent and total: a
+// replayed card request would carry "payload":{} with no vanityName, and
+// LinkedIn answers every one of them with HTTP 500. Round-tripping a
+// discovered request argument is the whole point of discover-then-replay, so
+// this method is load-bearing, not a convenience.
+func (o *Object) MarshalJSON() ([]byte, error) {
+	if o == nil {
+		return []byte("null"), nil
+	}
+	var buf bytes.Buffer
+	buf.WriteByte('{')
+	for i, key := range o.keys {
+		if i > 0 {
+			buf.WriteByte(',')
+		}
+		encoded, err := json.Marshal(key)
+		if err != nil {
+			return nil, err
+		}
+		buf.Write(encoded)
+		buf.WriteByte(':')
+		if encoded, err = json.Marshal(o.vals[key]); err != nil {
+			return nil, err
+		}
+		buf.Write(encoded)
+	}
+	buf.WriteByte('}')
+	return buf.Bytes(), nil
+}

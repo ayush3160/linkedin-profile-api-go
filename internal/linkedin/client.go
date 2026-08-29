@@ -39,7 +39,7 @@ const (
 	componentPath = "/flagship-web/rsc-action/actions/component"
 	profileScreen = "com.linkedin.sdui.flagshipnav.profile.Profile"
 	cardPrefix    = "com.linkedin.sdui.generated.profile.dsl.impl."
-	clientVersion = "0.2.6951"
+	clientVersion = "0.2.7003"
 
 	// ActivityCard is the recent-posts card. Several MB, so opt-in only.
 	ActivityCard = "profileCardsActivity"

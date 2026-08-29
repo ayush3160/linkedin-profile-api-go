@@ -1,6 +1,8 @@
 package linkedin
 
 import (
+	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -105,5 +107,31 @@ func TestDecodeOrderedPreservesKeyOrder(t *testing.T) {
 		if keys[i] != want[i] {
 			t.Fatalf("key order = %v, want %v", keys, want)
 		}
+	}
+}
+
+// A discovered request argument has to survive a decode/encode round trip. It
+// did not: Object keeps its keys unexported and had no MarshalJSON, so the
+// encoder emitted "{}" and every replayed card request went out with an empty
+// payload. LinkedIn answered all of them with HTTP 500, and the API still
+// returned 200 with empty sections -- a silent, total failure.
+func TestObjectRoundTripsThroughJSON(t *testing.T) {
+	const source = `{"$type":"proto.sdui.actions.requests.RequestedArguments",` +
+		`"payload":{"isSelfView":false,"vanityName":"ada-lovelace"},` +
+		`"requestMetadata":{"$type":"proto.sdui.common.RequestMetadata"}}`
+
+	decoded, err := decodeOrdered([]byte(source))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	encoded, err := json.Marshal(decoded)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if got := string(encoded); got != source {
+		t.Fatalf("round trip changed the payload:\n got: %s\nwant: %s", got, source)
+	}
+	if !bytes.Contains(encoded, []byte(`"vanityName":"ada-lovelace"`)) {
+		t.Error("vanityName was dropped -- LinkedIn answers such a request with HTTP 500")
 	}
 }

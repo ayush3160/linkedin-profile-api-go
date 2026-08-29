@@ -78,7 +78,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /raw", s.handleRaw)
 	mux.HandleFunc("GET /openapi.json", s.handleOpenAPI)
 	mux.HandleFunc("GET /", s.handleIndex)
-	return cors(mux)
+	return s.accessLog(cors(mux))
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
@@ -114,6 +114,7 @@ func (s *Server) handleProfile(w http.ResponseWriter, r *http.Request) {
 		if cached, ok := s.cache.Get(cacheKey); ok {
 			response := cached.(model.ProfileResponse)
 			response.Meta.Cached = true
+			s.log.Info("profile served from cache", "vanity", vanity, "include_activity", includeActivity)
 			writeJSON(w, http.StatusOK, response)
 			return
 		}
@@ -134,6 +135,18 @@ func (s *Server) handleProfile(w http.ResponseWriter, r *http.Request) {
 	}
 	profile, meta := linkedin.ParseProfile(vanity, cards)
 	meta.DurationMS = time.Since(started).Milliseconds()
+	s.log.Info("profile fetched",
+		"vanity", vanity,
+		"name", profile.Name,
+		"include_activity", includeActivity,
+		"duration_ms", meta.DurationMS,
+		"bytes", meta.BytesDownloade,
+		"sections", meta.SectionsFound,
+		"cards_failed", meta.CardsFailed,
+		"warnings", meta.Warnings,
+		"hourly_remaining", s.hourly.Remaining(),
+		"daily_remaining", s.daily.Remaining(),
+	)
 
 	response := model.ProfileResponse{Profile: profile, Meta: meta}
 	s.cache.Set(cacheKey, response)
@@ -208,6 +221,8 @@ func (s *Server) fetchCards(ctx context.Context, vanity string, includeActivity 
 
 	for _, budget := range []*cache.Budget{s.hourly, s.daily} {
 		if ok, resetIn := budget.Available(); !ok {
+			s.log.Warn("upstream budget exhausted",
+				"budget", budget.Name(), "vanity", vanity, "resets_in_s", int(resetIn.Seconds()))
 			return nil, linkedin.ErrBudgetExhausted(budget.Name(), resetIn)
 		}
 	}
@@ -233,6 +248,7 @@ func (s *Server) authorised(w http.ResponseWriter, r *http.Request) bool {
 			return true
 		}
 	}
+	s.log.Warn("unauthorized", "client", clientKey(r), "path", r.URL.Path)
 	writeError(w, &linkedin.Error{
 		Status: http.StatusUnauthorized, Code: "unauthorized",
 		Message: "missing or invalid X-API-Key",
@@ -247,6 +263,7 @@ func (s *Server) throttled(w http.ResponseWriter, r *http.Request) bool {
 	if allowed {
 		return false
 	}
+	s.log.Warn("rate limited", "client", clientKey(r), "path", r.URL.Path, "retry_after_s", int(retryAfter.Seconds())+1)
 	writeError(w, &linkedin.Error{
 		Status: http.StatusTooManyRequests, Code: "rate_limited",
 		Message:    "too many requests",
@@ -311,6 +328,64 @@ func writeError(w http.ResponseWriter, err error) {
 	}
 	writeJSON(w, http.StatusBadGateway, model.ErrorResponse{
 		Error: err.Error(), Code: "upstream_error",
+	})
+}
+
+// statusRecorder captures the status and size of a response for the access log.
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+	bytes  int
+}
+
+func (r *statusRecorder) WriteHeader(code int) {
+	r.status = code
+	r.ResponseWriter.WriteHeader(code)
+}
+
+func (r *statusRecorder) Write(body []byte) (int, error) {
+	if r.status == 0 {
+		r.status = http.StatusOK
+	}
+	written, err := r.ResponseWriter.Write(body)
+	r.bytes += written
+	return written, err
+}
+
+// accessLog emits one structured line per request. This is the log to read to
+// see which profile was asked for, what it returned and what it cost.
+//
+// It records the requested profile URL and the caller address. It never
+// records headers, so the API key and the session cookies cannot reach it.
+func (s *Server) accessLog(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		started := time.Now()
+		recorder := &statusRecorder{ResponseWriter: w}
+		next.ServeHTTP(recorder, r)
+
+		// The docs page and schema are static and noisy; skip them.
+		if r.URL.Path == "/" || r.URL.Path == "/openapi.json" {
+			return
+		}
+		attrs := []any{
+			"method", r.Method,
+			"path", r.URL.Path,
+			"status", recorder.status,
+			"bytes", recorder.bytes,
+			"duration_ms", time.Since(started).Milliseconds(),
+			"client", clientKey(r),
+		}
+		if requested := r.URL.Query().Get("url"); requested != "" {
+			attrs = append(attrs, "profile", requested)
+		}
+		switch {
+		case recorder.status >= 500:
+			s.log.Error("request", attrs...)
+		case recorder.status >= 400:
+			s.log.Warn("request", attrs...)
+		default:
+			s.log.Info("request", attrs...)
+		}
 	})
 }
 
