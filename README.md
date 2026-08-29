@@ -3,7 +3,8 @@
 Give it a LinkedIn profile URL, get structured JSON back.
 
 ```bash
-curl "https://<your-deployment>/profile?url=https://www.linkedin.com/in/williamhgates/"
+curl "https://linkedin-profile-api-go.fly.dev/profile?url=https://www.linkedin.com/in/williamhgates/" \
+  -H "X-API-Key: <key>"
 ```
 
 LinkedIn's current web app (`flagship-web`) does not serve profile data as JSON.
@@ -11,7 +12,8 @@ There is no `/voyager/api/...` call behind a profile page any more — the page 
 a **React Server Components stream** carrying a **server-driven UI** tree. This
 service speaks that protocol directly and reconstructs a data model from it.
 
-- **Live API:** `https://<your-deployment>` — docs at `/`, schema at `/openapi.json`
+- **Live API:** <https://linkedin-profile-api-go.fly.dev> — docs at `/`, schema at `/openapi.json`, liveness at `/health`
+- **Auth:** `X-API-Key` header. The deployment sets `API_KEYS`, so the key is required.
 - **Stack:** Go 1.23, **zero third-party dependencies**. Standard library only: `net/http` routing, `encoding/json`, `log/slog`. No browser, no headless Chrome.
 
 ---
@@ -454,11 +456,21 @@ terminates TLS will do.
 **Fly.io** (what the live deployment runs):
 
 ```bash
-fly launch --no-deploy                       # app names are globally unique --
-                                             # if it renames the app, update fly.toml
+fly apps create <globally-unique-name>       # then set app = "..." in fly.toml
 fly secrets set LI_AT='…' LI_JSESSIONID='ajax:…' API_KEYS='…'
-fly deploy
+fly deploy --remote-only
 ```
+
+**Do not run `fly launch` against this repo.** It rewrites `fly.toml` from its
+own guesses: it sets `internal_port = 8080` while the binary listens on `$PORT`
+(8000), so the proxy has nothing to connect to and every health check reports
+`connect: connection refused` against a machine that is running fine. It also
+resets `primary_region`. Create the app explicitly and deploy, as above.
+
+Fly provisions a second machine for high availability unless you stop it. Two
+machines means two of everything in-process -- including two independent
+upstream budgets, so the daily cap becomes 2x what `UPSTREAM_DAILY_BUDGET` says.
+This deployment runs a single machine on purpose. See Known limitations.
 
 `fly.toml` sets `min_machines_running = 1` and `auto_stop_machines = "off"`, so
 one machine stays warm and the first caller of the day does not pay a cold

@@ -1,6 +1,11 @@
-# fly launch --no-deploy && fly secrets set LI_AT=... LI_JSESSIONID=... && fly deploy
-app = "linkedin-profile-api"
-primary_region = "sin"
+# fly apps create <name> && fly secrets set LI_AT=... LI_JSESSIONID=... && fly deploy
+#
+# Do NOT use `fly launch` on this file: it rewrites internal_port to its own
+# guess (8080) while the binary listens on $PORT (8000), which deploys a
+# machine the proxy cannot reach -- health checks go critical with
+# "connect: connection refused".
+app = "linkedin-profile-api-go"
+primary_region = "sin"   # closest region to India; Fly has no bom
 
 [build]
 
