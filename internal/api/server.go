@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -27,7 +28,7 @@ const Version = "1.0.0"
 // Fetcher retrieves the raw card responses for a profile. The server depends
 // on this rather than on *linkedin.Client so tests can drive it directly.
 type Fetcher interface {
-	FetchProfile(ctx context.Context, vanity string, includeActivity bool) (map[string]string, error)
+	FetchProfile(ctx context.Context, vanity string, includeActivity bool) (linkedin.FetchResult, error)
 }
 
 // Server holds everything the handlers need.
@@ -128,12 +129,18 @@ func (s *Server) handleProfile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	started := time.Now()
-	cards, err := s.fetchCards(r.Context(), vanity, includeActivity)
+	fetched, err := s.fetchCards(r.Context(), vanity, includeActivity)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	profile, meta := linkedin.ParseProfile(vanity, cards)
+	profile, meta := linkedin.ParseProfile(vanity, fetched.Cards)
+	meta.CardsFailed = append(meta.CardsFailed, fetched.Failed...)
+	if len(fetched.Failed) > 0 {
+		meta.Warnings = append(meta.Warnings, fmt.Sprintf(
+			"%d of %d cards could not be fetched (%s); sections they carry are missing, not empty",
+			len(fetched.Failed), len(fetched.Failed)+len(fetched.Cards)-1, strings.Join(fetched.Failed, ", ")))
+	}
 	meta.DurationMS = time.Since(started).Milliseconds()
 	s.log.Info("profile fetched",
 		"vanity", vanity,
@@ -175,11 +182,12 @@ func (s *Server) handleRaw(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	cards, err := s.fetchCards(r.Context(), vanity, boolParam(r, "include_activity"))
+	fetched, err := s.fetchCards(r.Context(), vanity, boolParam(r, "include_activity"))
 	if err != nil {
 		writeError(w, err)
 		return
 	}
+	cards := fetched.Cards
 
 	type rawBlock struct {
 		Block    string   `json:"block"`
@@ -215,7 +223,7 @@ func (s *Server) handleRaw(w http.ResponseWriter, r *http.Request) {
 // A budget is spent before the fetch rather than after, so an upstream failure
 // still costs a unit. That is the conservative direction: a session that is
 // erroring is exactly the one that should be backing off.
-func (s *Server) fetchCards(ctx context.Context, vanity string, includeActivity bool) (map[string]string, error) {
+func (s *Server) fetchCards(ctx context.Context, vanity string, includeActivity bool) (linkedin.FetchResult, error) {
 	s.gate.Lock()
 	defer s.gate.Unlock()
 
@@ -223,7 +231,7 @@ func (s *Server) fetchCards(ctx context.Context, vanity string, includeActivity 
 		if ok, resetIn := budget.Available(); !ok {
 			s.log.Warn("upstream budget exhausted",
 				"budget", budget.Name(), "vanity", vanity, "resets_in_s", int(resetIn.Seconds()))
-			return nil, linkedin.ErrBudgetExhausted(budget.Name(), resetIn)
+			return linkedin.FetchResult{}, linkedin.ErrBudgetExhausted(budget.Name(), resetIn)
 		}
 	}
 	for _, budget := range []*cache.Budget{s.hourly, s.daily} {
@@ -233,9 +241,9 @@ func (s *Server) fetchCards(ctx context.Context, vanity string, includeActivity 
 	if gap := s.cfg.MinBetweenProfiles - time.Since(s.lastFetch); gap > 0 && !s.lastFetch.IsZero() {
 		s.sleep(gap)
 	}
-	cards, err := s.fetcher.FetchProfile(ctx, vanity, includeActivity)
+	result, err := s.fetcher.FetchProfile(ctx, vanity, includeActivity)
 	s.lastFetch = time.Now()
-	return cards, err
+	return result, err
 }
 
 func (s *Server) authorised(w http.ResponseWriter, r *http.Request) bool {

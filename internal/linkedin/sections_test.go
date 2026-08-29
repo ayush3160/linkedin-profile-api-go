@@ -200,3 +200,49 @@ func TestInterestTabsAreRecognisedAndNamed(t *testing.T) {
 		t.Fatalf("interests = %v, want [Kunal Shah]", got)
 	}
 }
+
+// Honors and certifications end a row with an issuer line rather than a bare
+// date -- "Issued by Economic Times · Jan 2016". singleDate is anchored, so it
+// never matched and every award on the card merged into one entity.
+func TestRowsClosedByAnIssuerLineAreSplit(t *testing.T) {
+	section := &Block{
+		Name:     "profile-card-honors",
+		Headings: []string{"Honors & awards"},
+		Texts: []string{
+			"Comeback award - Economic Times", "Issued by Economic Times · Jan 2016",
+			"Economic Times 40 under 40", "Issued by Times of India · Jan 2016",
+		},
+	}
+	entities := ParseEntities(section)
+	if len(entities) != 2 {
+		t.Fatalf("entities = %d, want 2: %+v", len(entities), entities)
+	}
+	if entities[0].Title != "Comeback award - Economic Times" {
+		t.Errorf("row 0 title = %q", entities[0].Title)
+	}
+	if entities[1].Title != "Economic Times 40 under 40" {
+		t.Errorf("row 1 title = %q -- both awards merged", entities[1].Title)
+	}
+}
+
+// "99+ endorsements" was read as a skill name because \d+\s+ cannot cross the
+// plus sign.
+func TestEndorsementCountIsNeverASkillName(t *testing.T) {
+	section := &Block{
+		Name:     "profile-card-skills",
+		Headings: []string{"Skills"},
+		Texts: []string{
+			"Marketing Strategy", "Endorsed by Praveen and 3 others who are highly skilled at this",
+			"99+ endorsements",
+			"Entrepreneurship", "13 endorsements",
+		},
+	}
+	skills := ParseSkills(section)
+	names := make([]string, len(skills))
+	for i, skill := range skills {
+		names[i] = skill.Name
+	}
+	if len(skills) != 2 || names[0] != "Marketing Strategy" || names[1] != "Entrepreneurship" {
+		t.Fatalf("skill names = %v, want [Marketing Strategy Entrepreneurship]", names)
+	}
+}

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,17 +19,18 @@ import (
 // stubFetcher stands in for the LinkedIn client so the route can be exercised
 // without touching the network.
 type stubFetcher struct {
-	cards map[string]string
-	err   error
-	calls int
+	cards  map[string]string
+	failed []string
+	err    error
+	calls  int
 }
 
-func (s *stubFetcher) FetchProfile(context.Context, string, bool) (map[string]string, error) {
+func (s *stubFetcher) FetchProfile(context.Context, string, bool) (linkedin.FetchResult, error) {
 	s.calls++
 	if s.err != nil {
-		return nil, s.err
+		return linkedin.FetchResult{}, s.err
 	}
-	return s.cards, nil
+	return linkedin.FetchResult{Cards: s.cards, Failed: s.failed}, nil
 }
 
 func testConfig() config.Config {
@@ -372,5 +375,58 @@ func TestHealthReportsRemainingBudget(t *testing.T) {
 	}
 	if health.HourlyRemaining != 2 {
 		t.Errorf("hourly remaining = %d, want 2", health.HourlyRemaining)
+	}
+}
+
+// When every content card fails, the shell alone still yields a name, a
+// headline and a photo. Returning that as a plain 200 is indistinguishable
+// from a member with no experience, education or skills -- which is how nine
+// failing cards went unnoticed in production. The body stays useful and the
+// status stays 200, but meta has to say what happened.
+func TestDegradedFetchIsReportedNotHidden(t *testing.T) {
+	cfg := testConfig()
+	shellOnly := map[string]string{"shell": testdata.AllCards()["shell"]}
+	fetcher := &stubFetcher{
+		cards:  shellOnly,
+		failed: []string{"profileCardsAboveActivity", "profileCardsExperienceOnly"},
+	}
+	handler := newServer(t, cfg, fetcher)
+
+	response := get(t, handler, profileQuery, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 -- a partial profile is still useful", response.Code)
+	}
+	var body model.ProfileResponse
+	decode(t, response, &body)
+
+	if body.Profile.Name == "" {
+		t.Error("the shell still carries identity; name should be populated")
+	}
+	for _, want := range []string{"profileCardsAboveActivity", "profileCardsExperienceOnly"} {
+		if !slices.Contains(body.Meta.CardsFailed, want) {
+			t.Errorf("meta.cards_failed = %v, missing %q", body.Meta.CardsFailed, want)
+		}
+	}
+	if len(body.Meta.Warnings) == 0 {
+		t.Fatal("meta.warnings is empty -- the caller cannot tell missing from absent")
+	}
+	joined := strings.Join(body.Meta.Warnings, " ")
+	if !strings.Contains(joined, "could not be fetched") {
+		t.Errorf("warnings do not mention the failed fetch: %v", body.Meta.Warnings)
+	}
+	if !strings.Contains(joined, "no content cards were returned") {
+		t.Errorf("warnings do not flag the shell-only result: %v", body.Meta.Warnings)
+	}
+}
+
+func TestHealthyFetchCarriesNoWarnings(t *testing.T) {
+	handler := newServer(t, testConfig(), &stubFetcher{cards: testdata.AllCards()})
+	var body model.ProfileResponse
+	decode(t, get(t, handler, profileQuery, nil), &body)
+	if len(body.Meta.Warnings) != 0 {
+		t.Errorf("warnings = %v, want none on a clean fetch", body.Meta.Warnings)
+	}
+	if len(body.Meta.CardsFailed) != 0 {
+		t.Errorf("cards_failed = %v, want none", body.Meta.CardsFailed)
 	}
 }

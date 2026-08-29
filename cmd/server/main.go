@@ -73,8 +73,8 @@ func main() {
 // starts and /health can report why /profile is unavailable.
 type unconfigured struct{}
 
-func (unconfigured) FetchProfile(context.Context, string, bool) (map[string]string, error) {
-	return nil, &linkedin.Error{
+func (unconfigured) FetchProfile(context.Context, string, bool) (linkedin.FetchResult, error) {
+	return linkedin.FetchResult{}, &linkedin.Error{
 		Status: http.StatusServiceUnavailable, Code: "session_expired",
 		Message: "server has no LinkedIn session configured",
 	}

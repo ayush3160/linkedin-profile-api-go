@@ -160,6 +160,22 @@ func ParseDates(line string) *model.DateRange {
 	return nil
 }
 
+// closesRow reports whether a line ends the list row it belongs to.
+//
+// Most rows end with a bare date. Honors and certifications end with an issuer
+// line instead -- "Issued by Economic Times · Jan 2016" -- which singleDate
+// will not match because it is anchored. Without this, every award on a card
+// merged into one entity.
+func closesRow(line string) bool {
+	if ParseDates(line) != nil {
+		return true
+	}
+	if index := strings.LastIndex(line, "·"); index >= 0 {
+		return ParseDates(strings.TrimSpace(line[index+len("·"):])) != nil
+	}
+	return false
+}
+
 // LooksLikeLocation reports whether a line reads as a place.
 func LooksLikeLocation(line string) bool {
 	lowered := strings.ToLower(line)
@@ -389,7 +405,7 @@ func parseFlatEntities(section *Block) []model.Entity {
 	current := make([]string, 0, 4)
 	for _, line := range lines {
 		current = append(current, line)
-		if ParseDates(line) != nil {
+		if closesRow(line) {
 			rows = append(rows, current)
 			current = make([]string, 0, 4)
 		}
@@ -434,7 +450,7 @@ func parseFlatEntities(section *Block) []model.Entity {
 
 // skillDetail recognises the lines that describe a skill rather than name one:
 // "3 endorsements", or the role it was endorsed through.
-var skillDetail = regexp.MustCompile(`(?i)^\d+\s+endorsement|^endorsed by|\sat\s`)
+var skillDetail = regexp.MustCompile(`(?i)^\d+\+?\s*endorsement|^endorsed by|\sat\s`)
 
 // ParseSkills maps a skills card.
 //

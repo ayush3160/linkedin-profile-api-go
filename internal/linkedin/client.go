@@ -137,15 +137,28 @@ func New(opts Options) (*Client, error) {
 	}, nil
 }
 
-// FetchProfile returns {cardName: flightText}, including "shell".
-func (c *Client) FetchProfile(ctx context.Context, vanity string, includeActivity bool) (map[string]string, error) {
+// FetchResult is what one profile fetch produced.
+//
+// Failed carries the cards LinkedIn refused. They used to be logged and
+// dropped, which left the response indistinguishable from a member who simply
+// has no experience section: HTTP 200, empty arrays, and a meta reporting
+// nothing wrong. A caller cannot tell absent data from a broken fetch unless
+// the failures survive.
+type FetchResult struct {
+	Cards  map[string]string
+	Failed []string
+}
+
+// FetchProfile returns {cardName: flightText}, including "shell", plus the
+// names of any cards that could not be fetched.
+func (c *Client) FetchProfile(ctx context.Context, vanity string, includeActivity bool) (FetchResult, error) {
 	shell, err := c.Navigate(ctx, vanity)
 	if err != nil {
-		return nil, err
+		return FetchResult{}, err
 	}
 	cards, err := DiscoverCards(shell, includeActivity)
 	if err != nil {
-		return nil, err
+		return FetchResult{}, err
 	}
 	names := make([]string, 0, len(cards))
 	for _, card := range cards {
@@ -155,8 +168,9 @@ func (c *Client) FetchProfile(ctx context.Context, vanity string, includeActivit
 
 	results := map[string]string{"shell": shell}
 	if len(cards) == 0 {
-		return results, nil
+		return FetchResult{Cards: results}, nil
 	}
+	var failed []string
 
 	var (
 		mu       sync.Mutex
@@ -184,6 +198,7 @@ func (c *Client) FetchProfile(ctx context.Context, vanity string, includeActivit
 				// One dud card must not sink the whole profile; the parser
 				// reports which sections were unavailable.
 				c.log.Warn("card failed", "card", card.ShortName(), "err", err)
+				failed = append(failed, card.ShortName())
 				return
 			}
 			results[card.ShortName()] = body
@@ -191,9 +206,10 @@ func (c *Client) FetchProfile(ctx context.Context, vanity string, includeActivit
 	}
 	wg.Wait()
 	if fatal != nil {
-		return nil, fatal
+		return FetchResult{}, fatal
 	}
-	return results, nil
+	sort.Strings(failed)
+	return FetchResult{Cards: results, Failed: failed}, nil
 }
 
 // Navigate fetches the page shell and top card.

@@ -63,8 +63,8 @@ func TestFetchProfileDiscoversAndReplays(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{"shell", "profileCardsAboveActivity", "profileCardsExperienceOnly"} {
-		if _, ok := got[want]; !ok {
-			t.Errorf("missing card %q (have %v)", want, keys(got))
+		if _, ok := got.Cards[want]; !ok {
+			t.Errorf("missing card %q (have %v)", want, keys(got.Cards))
 		}
 	}
 }
@@ -145,11 +145,16 @@ func TestOneFailedCardIsSkipped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a single card failure should not be fatal: %v", err)
 	}
-	if _, ok := got["profileCardsExperienceOnly"]; ok {
+	if _, ok := got.Cards["profileCardsExperienceOnly"]; ok {
 		t.Error("failed card should be absent, not empty")
 	}
-	if _, ok := got["shell"]; !ok {
+	if _, ok := got.Cards["shell"]; !ok {
 		t.Error("shell should still be present")
+	}
+	// A dropped card must be reported, or the response looks like a member
+	// who simply has no experience.
+	if len(got.Failed) != 1 || got.Failed[0] != "profileCardsExperienceOnly" {
+		t.Errorf("Failed = %v, want [profileCardsExperienceOnly]", got.Failed)
 	}
 }
 

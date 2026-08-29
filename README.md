@@ -511,7 +511,7 @@ static `CGO_ENABLED=0` binary, so it runs as non-root with no shell and no libc.
 ## Testing
 
 ```bash
-make test     # 75 tests
+make test     # 79 tests
 make race     # same, under the race detector
 make lint     # gofmt + go vet
 ```
@@ -548,6 +548,19 @@ LINKEDIN_FIXTURES=dump/ go test ./internal/linkedin/ -run RealCapture -v
 ---
 
 ## Known limitations
+
+**A partial fetch returns 200, and says so.** Cards are fetched independently
+and one failing card does not sink the profile. When cards fail, their names
+appear in `meta.cards_failed` and `meta.warnings` explains what is missing;
+when *no* content card succeeds, the response still carries identity and the
+top card from the shell, with a warning saying the empty sections are unknown
+rather than absent. Check `meta` before treating an empty array as "the member
+has none" -- an HTTP 200 alone does not distinguish the two.
+
+**Recommendations arrive as a heading only.** LinkedIn renders the entries
+behind Received/Given tabs that load as a separate screen, which this service
+does not follow, so `recommendations` is normally empty even on profiles that
+have them.
 
 **Coverage depends on the account doing the looking.** LinkedIn renders
 different cards for 1st-degree connections, 2nd/3rd-degree, and out-of-network

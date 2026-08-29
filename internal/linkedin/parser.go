@@ -102,6 +102,14 @@ func ParseProfile(vanity string, cards map[string]string) (model.Profile, model.
 	if profile.Name == "" {
 		meta.Warnings = append(meta.Warnings, "could not determine the member's name")
 	}
+	// The shell alone yields identity and the top card: a name, a headline and
+	// a photo, with every list section empty. That is indistinguishable from a
+	// sparse member unless it is said out loud, so say it.
+	if onlyShell(meta.CardsReturned) {
+		meta.Warnings = append(meta.Warnings,
+			"no content cards were returned -- only the page shell parsed, so this profile carries "+
+				"identity and the top card only; the empty sections are unknown, not absent")
+	}
 	return profile, meta
 }
 
@@ -414,4 +422,9 @@ func acceptsRepeats(key string) bool {
 		return true
 	}
 	return entitySections[key]
+}
+
+// onlyShell reports whether the shell was the only card that parsed.
+func onlyShell(returned []string) bool {
+	return len(returned) == 1 && returned[0] == "shell"
 }
