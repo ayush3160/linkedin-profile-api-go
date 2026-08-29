@@ -286,6 +286,15 @@ func applySection(profile *model.Profile, key string, block *Block) {
 		if len(entities) == 0 {
 			return
 		}
+		// A section may legitimately arrive split across cards, so repeats are
+		// applied rather than skipped. But Walk() also visits nested levels,
+		// and an outer block plus the card block resolve to the same rows --
+		// which is why every school used to be listed twice. Rows already
+		// recorded for this section are dropped.
+		entities = withoutSeenEntities(profile, key, entities)
+		if len(entities) == 0 {
+			return
+		}
 		switch key {
 		case "experience":
 			profile.Experience = append(profile.Experience, entities...)
@@ -325,4 +334,57 @@ func aboutText(block *Block) string {
 		parts = append(parts, line)
 	}
 	return strings.Join(parts, "\n\n")
+}
+
+// entityFingerprint identifies a row by the lines it was built from.
+func entityFingerprint(entity model.Entity) string {
+	if len(entity.RawLines) > 0 {
+		return strings.Join(entity.RawLines, "\x00")
+	}
+	return entity.Title + "\x00" + entity.Subtitle
+}
+
+// withoutSeenEntities drops rows already present in the section.
+func withoutSeenEntities(profile *model.Profile, key string, entities []model.Entity) []model.Entity {
+	existing := map[string]bool{}
+	for _, entity := range entitiesFor(profile, key) {
+		existing[entityFingerprint(entity)] = true
+	}
+	out := entities[:0]
+	for _, entity := range entities {
+		fingerprint := entityFingerprint(entity)
+		if existing[fingerprint] {
+			continue
+		}
+		existing[fingerprint] = true
+		out = append(out, entity)
+	}
+	return out
+}
+
+// entitiesFor returns the slice a section key writes into.
+func entitiesFor(profile *model.Profile, key string) []model.Entity {
+	switch key {
+	case "experience":
+		return profile.Experience
+	case "education":
+		return profile.Education
+	case "certifications":
+		return profile.Certifications
+	case "projects":
+		return profile.Projects
+	case "volunteering":
+		return profile.Volunteering
+	case "publications":
+		return profile.Publications
+	case "honors":
+		return profile.Honors
+	case "courses":
+		return profile.Courses
+	case "organizations":
+		return profile.Organizations
+	case "recommendations":
+		return profile.Recommendations
+	}
+	return nil
 }

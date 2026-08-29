@@ -511,7 +511,7 @@ static `CGO_ENABLED=0` binary, so it runs as non-root with no shell and no libc.
 ## Testing
 
 ```bash
-make test     # 68 tests
+make test     # 72 tests
 make race     # same, under the race detector
 make lint     # gofmt + go vet
 ```
@@ -554,6 +554,14 @@ different cards for 1st-degree connections, 2nd/3rd-degree, and out-of-network
 viewers. A 3rd-degree profile may return no contact info and a truncated
 experience list. That is a property of LinkedIn, not of the parser — `meta`
 reports which sections came back so you can tell the difference.
+
+**Row segmentation differs by card, and Experience is the awkward one.** Most
+sections emit one instrumented sub-block per row. The collapsed Experience card
+emits every role as a single flat text list, with per-row children that carry
+only a logo. Those lists are split on the date that closes each row, and a
+location -- rendered *after* the date -- is handed back to the row it belongs
+to. Rows whose lines LinkedIn ever reorders would mis-segment; `raw_lines`
+carries the original sequence on every entity so nothing is lost.
 
 **Sections beyond the top card, About, Experience, Skills and Languages are
 mapped generically.** The mapper was written against the card responses I could

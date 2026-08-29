@@ -155,6 +155,12 @@ func LooksLikeLocation(line string) bool {
 			return true
 		}
 	}
+	// LinkedIn's legacy metro format has no comma: "Greater Seattle Area",
+	// "San Francisco Bay Area". Anchored to the end so an "Area Manager" title
+	// is not mistaken for a place.
+	if strings.HasSuffix(lowered, " area") && len(line) < 60 {
+		return true
+	}
 	// "Bengaluru, Karnataka, India" -- comma separated, short, no verbs.
 	return strings.Count(line, ",") >= 1 && len(line) < 90 && ParseDates(line) == nil
 }
@@ -189,15 +195,82 @@ func SectionKey(block *Block) string {
 	return ""
 }
 
-// EntityBlocks returns the child blocks of a section that look like list rows.
+// EntityBlocks returns the blocks of a section that look like list rows.
+//
+// Rows are not reliably direct children. Education nests them one level down
+// (section -> wrapper -> lockup per school), so reading only the immediate
+// children yields a single block holding every school at once, which maps to
+// one entity with all of them glued together. Descending to the level that
+// actually holds several rows is what separates them.
+//
+// A section can also expose both a wrapper and its rows, which would then
+// produce the wrapper's merged entity alongside a duplicate of each real row.
+// Exact repeats and containing wrappers are both dropped.
 func EntityBlocks(section *Block) []*Block {
-	var rows []*Block
-	for _, child := range section.Children {
-		if len(CleanLines(child.AllTexts())) > 0 {
-			rows = append(rows, child)
+	candidates := collectRows(section)
+
+	lines := make([][]string, len(candidates))
+	for i, block := range candidates {
+		lines[i] = CleanLines(block.AllTexts())
+	}
+
+	rows := make([]*Block, 0, len(candidates))
+	seen := make(map[string]bool, len(candidates))
+	for i, block := range candidates {
+		key := strings.Join(lines[i], "\x00")
+		if seen[key] {
+			continue
 		}
+		wrapper := false
+		for j := range candidates {
+			if i != j && len(lines[j]) < len(lines[i]) && containsRun(lines[i], lines[j]) {
+				wrapper = true
+				break
+			}
+		}
+		if wrapper {
+			continue
+		}
+		seen[key] = true
+		rows = append(rows, block)
 	}
 	return rows
+}
+
+// collectRows descends past wrappers to the level that holds several rows.
+func collectRows(parent *Block) []*Block {
+	var rows []*Block
+	for _, child := range parent.Children {
+		if len(CleanLines(child.AllTexts())) == 0 {
+			continue
+		}
+		if inner := collectRows(child); len(inner) > 1 {
+			rows = append(rows, inner...)
+			continue
+		}
+		rows = append(rows, child)
+	}
+	return rows
+}
+
+// containsRun reports whether needle appears in haystack as a contiguous run.
+func containsRun(haystack, needle []string) bool {
+	if len(needle) == 0 || len(needle) > len(haystack) {
+		return false
+	}
+	for start := 0; start+len(needle) <= len(haystack); start++ {
+		match := true
+		for offset, line := range needle {
+			if haystack[start+offset] != line {
+				match = false
+				break
+			}
+		}
+		if match {
+			return true
+		}
+	}
+	return false
 }
 
 // ParseEntity maps one list row onto an Entity.
@@ -251,12 +324,88 @@ func ParseEntity(block *Block) (model.Entity, bool) {
 }
 
 // ParseEntities maps every list row in a section.
+//
+// Two shapes occur. Most sections give one instrumented sub-block per row --
+// education renders an education-lockup-view per school -- and those are read
+// directly. The collapsed Experience card does not: every role's lines are
+// emitted as one flat list on the card itself, and the only per-row children
+// are logo blocks carrying an image and no text. Falling back to flat
+// segmentation is what keeps Experience from mapping to nothing at all.
 func ParseEntities(section *Block) []model.Entity {
+	blocks := EntityBlocks(section)
+	if len(blocks) == 0 {
+		return parseFlatEntities(section)
+	}
 	var out []model.Entity
-	for _, block := range EntityBlocks(section) {
+	for _, block := range blocks {
 		entity, ok := ParseEntity(block)
 		if !ok || (entity.Title == "" && entity.Subtitle == "") {
 			continue
+		}
+		out = append(out, entity)
+	}
+	return out
+}
+
+// parseFlatEntities splits a section's own lines into rows.
+//
+// A date range closes a row. LinkedIn renders each collapsed row as title,
+// subtitle, dates -- so the date is the last line of its row and the next line
+// begins the next one. Rows are then handed to the same pattern-based mapper
+// the sub-block path uses, so a row with no dates still maps its title and
+// subtitle.
+//
+// Location and description only appear on the "show all" detail screen, which
+// this service does not follow, so they do not appear in these flat lists. If
+// LinkedIn ever inlines them the trailing lines would attach to the following
+// row; meta.warnings and raw_lines are the signal that has happened.
+func parseFlatEntities(section *Block) []model.Entity {
+	lines := withoutHeadings(CleanLines(section.AllTexts()))
+	if len(lines) == 0 {
+		return nil
+	}
+
+	var rows [][]string
+	current := make([]string, 0, 4)
+	for _, line := range lines {
+		current = append(current, line)
+		if ParseDates(line) != nil {
+			rows = append(rows, current)
+			current = make([]string, 0, 4)
+		}
+	}
+	if len(current) > 0 {
+		rows = append(rows, current)
+	}
+
+	// A date closes a row, but a location is rendered after it -- so a row's
+	// trailing location lands at the head of the next one, where it would be
+	// read as that row's title. Satya Nadella's Microsoft location became the
+	// job title of his next role. Hand such a leading location back.
+	for i := 1; i < len(rows); i++ {
+		for len(rows[i]) > 1 && LooksLikeLocation(rows[i][0]) {
+			rows[i-1] = append(rows[i-1], rows[i][0])
+			rows[i] = rows[i][1:]
+		}
+	}
+
+	// Logos are siblings of the text, one per row and in the same order.
+	logos := make([]Image, 0, len(rows))
+	for _, child := range section.Children {
+		if images := child.AllImages(); len(images) > 0 && len(CleanLines(child.AllTexts())) == 0 {
+			logos = append(logos, images[0])
+		}
+	}
+
+	out := make([]model.Entity, 0, len(rows))
+	for i, row := range rows {
+		entity, ok := ParseEntity(&Block{Texts: row})
+		if !ok || (entity.Title == "" && entity.Subtitle == "") {
+			continue
+		}
+		if i < len(logos) {
+			logo := ToModelImage(logos[i])
+			entity.Logo = &logo
 		}
 		out = append(out, entity)
 	}
