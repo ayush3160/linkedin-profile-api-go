@@ -4,7 +4,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/ayushsharma/linkedin-profile-api/internal/model"
+	"github.com/ayush3160/linkedin-profile-api-go/internal/model"
 )
 
 // This file maps the semantic outline onto typed profile fields.
@@ -100,6 +100,16 @@ var noise = map[string]bool{
 
 var noisePrefixes = [...]string{"show all ", "see all ", "view all ", "loading "}
 
+// SDUI emits its own i18n plumbing as rendered text: the binding key for a
+// count, the ICU template that formats it, and the locale it resolved in. On
+// the Skills card these arrive before any real skill, so the first of them was
+// being read as the skill's name.
+var (
+	icuTemplate = regexp.MustCompile(`^\{[0-9]+,\s*(plural|number|select)`)
+	localeCode  = regexp.MustCompile(`^[a-z]{2}_[A-Z]{2}$`)
+	bindingKey  = regexp.MustCompile(`^\S+-(count|index|state)$`)
+)
+
 // IsNoise reports whether a rendered line is UI chrome rather than content.
 func IsNoise(line string) bool {
 	lowered := strings.ToLower(strings.TrimSpace(line))
@@ -111,7 +121,10 @@ func IsNoise(line string) bool {
 			return true
 		}
 	}
-	return false
+	trimmed := strings.TrimSpace(line)
+	return icuTemplate.MatchString(trimmed) ||
+		localeCode.MatchString(trimmed) ||
+		(!strings.Contains(trimmed, " ") && bindingKey.MatchString(trimmed))
 }
 
 // CleanLines trims and drops chrome.
@@ -184,8 +197,15 @@ func SplitEmploymentType(line string) (string, string) {
 // would let the global footer's "About" link masquerade as the About card --
 // it ships in the same response and would win on document order.
 func SectionKey(block *Block) string {
-	if key, ok := SectionViewNames[strings.ToLower(strings.TrimSpace(block.Name))]; ok {
+	name := strings.ToLower(strings.TrimSpace(block.Name))
+	if key, ok := SectionViewNames[name]; ok {
 		return key
+	}
+	// Interests are not rendered inside the interests card. Each followed
+	// company, school, newsletter or influencer is its own interest-tab-*
+	// block alongside it, so the card itself holds nothing but its heading.
+	if strings.HasPrefix(name, "interest-tab-") {
+		return "interests"
 	}
 	for _, heading := range block.Headings {
 		if key, ok := SectionHeadings[strings.ToLower(strings.TrimSpace(heading))]; ok {
@@ -412,17 +432,38 @@ func parseFlatEntities(section *Block) []model.Entity {
 	return out
 }
 
+// skillDetail recognises the lines that describe a skill rather than name one:
+// "3 endorsements", or the role it was endorsed through.
+var skillDetail = regexp.MustCompile(`(?i)^\d+\s+endorsement|^endorsed by|\sat\s`)
+
 // ParseSkills maps a skills card.
+//
+// Like Experience, the card renders as one flat list: a skill name followed by
+// zero or more lines describing it. Treating each block's first line as a name
+// produced a single skill called "Skills<vanity>-count" -- the i18n binding key
+// -- carrying every real skill in its detail.
 func ParseSkills(section *Block) []model.Skill {
 	var out []model.Skill
 	seen := map[string]bool{}
 	for _, block := range entityBlocksOrSelf(section) {
-		lines := withoutHeadings(CleanLines(block.AllTexts()))
-		if len(lines) == 0 || seen[lines[0]] {
-			continue
+		for _, line := range withoutHeadings(CleanLines(block.AllTexts())) {
+			if skillDetail.MatchString(line) {
+				if len(out) > 0 {
+					last := &out[len(out)-1]
+					if last.Detail == "" {
+						last.Detail = line
+					} else {
+						last.Detail += " · " + line
+					}
+				}
+				continue
+			}
+			if seen[line] {
+				continue
+			}
+			seen[line] = true
+			out = append(out, model.Skill{Name: line})
 		}
-		seen[lines[0]] = true
-		out = append(out, model.Skill{Name: lines[0], Detail: strings.Join(lines[1:], " · ")})
 	}
 	return out
 }
@@ -449,17 +490,26 @@ func ParseLanguages(section *Block) []model.Language {
 	return out
 }
 
-// ParseInterests maps an interests card.
+// interestType strips the trailing kind LinkedIn appends to an interest's
+// accessible name: "Coinbase, Company" -> "Coinbase".
+var interestType = regexp.MustCompile(`,\s*(Company|School|Newsletter|Group|Influencer)$`)
+
+// ParseInterests maps one interest tab, or an interests card that holds its
+// entries inline.
 func ParseInterests(section *Block) []string {
 	var out []string
 	seen := map[string]bool{}
-	for _, block := range EntityBlocks(section) {
+	for _, block := range entityBlocksOrSelf(section) {
 		lines := withoutHeadings(CleanLines(block.AllTexts()))
-		if len(lines) == 0 || seen[lines[0]] {
+		if len(lines) == 0 {
 			continue
 		}
-		seen[lines[0]] = true
-		out = append(out, lines[0])
+		name := strings.TrimSpace(interestType.ReplaceAllString(lines[0], ""))
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
 	}
 	return out
 }

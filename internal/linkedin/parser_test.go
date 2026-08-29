@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ayushsharma/linkedin-profile-api/internal/model"
-	"github.com/ayushsharma/linkedin-profile-api/internal/testdata"
+	"github.com/ayush3160/linkedin-profile-api-go/internal/model"
+	"github.com/ayush3160/linkedin-profile-api-go/internal/testdata"
 )
 
 func parsed(t *testing.T) (model.Profile, model.Meta) {

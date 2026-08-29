@@ -1,3 +1,3 @@
-module github.com/ayushsharma/linkedin-profile-api
+module github.com/ayush3160/linkedin-profile-api-go
 
 go 1.23

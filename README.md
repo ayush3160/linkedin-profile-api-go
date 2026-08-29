@@ -37,7 +37,7 @@ service speaks that protocol directly and reconstructs a data model from it.
 ```bash
 git clone https://github.com/ayush3160/linkedin-profile-api-go.git
 cd linkedin-profile-api-go
-# create .env with LI_AT and LI_JSESSIONID (cookies below; full list under Configuration)
+cp .env.example .env         # then fill in the two cookies (below)
 make run                     # http://localhost:8000
 ```
 
@@ -511,7 +511,7 @@ static `CGO_ENABLED=0` binary, so it runs as non-root with no shell and no libc.
 ## Testing
 
 ```bash
-make test     # 72 tests
+make test     # 75 tests
 make race     # same, under the race detector
 make lint     # gofmt + go vet
 ```
@@ -538,7 +538,7 @@ LINKEDIN_FIXTURES=dump/ go test ./internal/linkedin/ -run RealCapture -v
 
 ## Secrets
 
-- `.env` and every `.env.*` file are gitignored; the Configuration table above documents each variable.
+- `.env` is gitignored; `.env.example` documents every variable with empty values and is the only env file in the repo.
 - `*.har` and `*.flight` are gitignored — a HAR contains live session cookies.
 - Deployment configs reference secrets by name only (`sync: false` on Render,
   `fly secrets` on Fly).

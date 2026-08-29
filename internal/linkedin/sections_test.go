@@ -140,3 +140,63 @@ func TestLooksLikeLocationAcceptsMetroAreasButNotTitles(t *testing.T) {
 		}
 	}
 }
+
+// SDUI renders its own i18n plumbing as text. On the Skills card the binding
+// key, the ICU template and the locale arrive before any real skill, and the
+// first of them was read as the skill's name -- a lone skill called
+// "Skills<vanity>-count" carrying every real skill in its detail.
+func TestSkillsCardIgnoresI18nPlumbing(t *testing.T) {
+	section := &Block{
+		Name:     "profile-card-skills",
+		Headings: []string{"Skills"},
+		Texts: []string{
+			"Skillsada-lovelace-count",
+			"{0,plural,0#|one# ({0,number,integer})|other# ({0,number,integer})}",
+			"en_US",
+			"Skills",
+			"Next.js", "Full Stack Developer Intern at Unlock Velocity",
+			"Web Development", "3 endorsements",
+		},
+	}
+	skills := ParseSkills(section)
+	if len(skills) != 2 {
+		t.Fatalf("skills = %d, want 2: %+v", len(skills), skills)
+	}
+	if skills[0].Name != "Next.js" || skills[1].Name != "Web Development" {
+		t.Errorf("names = %q, %q", skills[0].Name, skills[1].Name)
+	}
+	if skills[1].Detail != "3 endorsements" {
+		t.Errorf("detail = %q, want 3 endorsements", skills[1].Detail)
+	}
+}
+
+func TestIsNoiseRejectsBindingKeysAndTemplates(t *testing.T) {
+	for _, line := range []string{"Skillsada-count", "en_US", "{0,plural,0#|one# (x)}", "show all 12 skills"} {
+		if !IsNoise(line) {
+			t.Errorf("IsNoise(%q) = false, want true", line)
+		}
+	}
+	for _, line := range []string{"Next.js", "Web Development", "Chairman and CEO", "Harvard University"} {
+		if IsNoise(line) {
+			t.Errorf("IsNoise(%q) = true, want false", line)
+		}
+	}
+}
+
+// Interests are not rendered inside the interests card -- that holds only its
+// heading. Each followed entity is its own interest-tab-* block beside it, so
+// the card must not claim the section and stop there.
+func TestInterestTabsAreRecognisedAndNamed(t *testing.T) {
+	tab := &Block{Name: "interest-tab-companies", Texts: []string{"Coinbase, Company", "true", "Coinbase", "1,464,706 followers"}}
+	if key := SectionKey(tab); key != "interests" {
+		t.Fatalf("SectionKey = %q, want interests", key)
+	}
+	got := ParseInterests(tab)
+	if len(got) != 1 || got[0] != "Coinbase" {
+		t.Fatalf("interests = %v, want [Coinbase]", got)
+	}
+	influencer := &Block{Name: "interest-tab-influencers", Texts: []string{"Kunal Shah", "· 2nd", "1,415,218 followers"}}
+	if got := ParseInterests(influencer); len(got) != 1 || got[0] != "Kunal Shah" {
+		t.Fatalf("interests = %v, want [Kunal Shah]", got)
+	}
+}

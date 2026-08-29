@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/ayushsharma/linkedin-profile-api/internal/model"
+	"github.com/ayush3160/linkedin-profile-api-go/internal/model"
 )
 
 var (
@@ -84,7 +84,7 @@ func ParseProfile(vanity string, cards map[string]string) (model.Profile, model.
 			if key == "" {
 				continue
 			}
-			if seenSection[key] && !entitySections[key] {
+			if seenSection[key] && !acceptsRepeats(key) {
 				continue
 			}
 			applySection(&profile, key, block)
@@ -280,7 +280,17 @@ func applySection(profile *model.Profile, key string, block *Block) {
 			}
 		}
 	case key == "interests":
-		profile.Interests = append(profile.Interests, ParseInterests(block)...)
+		existing := map[string]bool{}
+		for _, interest := range profile.Interests {
+			existing[interest] = true
+		}
+		for _, interest := range ParseInterests(block) {
+			if existing[interest] {
+				continue
+			}
+			existing[interest] = true
+			profile.Interests = append(profile.Interests, interest)
+		}
 	case entitySections[key]:
 		entities := ParseEntities(block)
 		if len(entities) == 0 {
@@ -387,4 +397,21 @@ func entitiesFor(profile *model.Profile, key string) []model.Entity {
 		return profile.Recommendations
 	}
 	return nil
+}
+
+// acceptsRepeats reports whether more than one block may contribute to a
+// section.
+//
+// Entity sections can arrive split across cards. Interests are stronger than
+// that: the interests card carries only its heading, and every followed
+// company, school, newsletter and influencer is a separate interest-tab-*
+// block. Stopping at the first block matched the empty card and discarded all
+// of them. Skills and languages can likewise span blocks; each branch above
+// drops repeats by name.
+func acceptsRepeats(key string) bool {
+	switch key {
+	case "interests", "skills", "languages":
+		return true
+	}
+	return entitySections[key]
 }

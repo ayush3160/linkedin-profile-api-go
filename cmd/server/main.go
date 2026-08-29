@@ -11,9 +11,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/ayushsharma/linkedin-profile-api/internal/api"
-	"github.com/ayushsharma/linkedin-profile-api/internal/config"
-	"github.com/ayushsharma/linkedin-profile-api/internal/linkedin"
+	"github.com/ayush3160/linkedin-profile-api-go/internal/api"
+	"github.com/ayush3160/linkedin-profile-api-go/internal/config"
+	"github.com/ayush3160/linkedin-profile-api-go/internal/linkedin"
 )
 
 func main() {

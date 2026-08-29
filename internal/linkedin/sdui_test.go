@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ayushsharma/linkedin-profile-api/internal/testdata"
+	"github.com/ayush3160/linkedin-profile-api-go/internal/testdata"
 )
 
 func outlineOf(t *testing.T, flight string) *Block {

@@ -14,11 +14,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ayushsharma/linkedin-profile-api/internal/cache"
-	"github.com/ayushsharma/linkedin-profile-api/internal/config"
-	"github.com/ayushsharma/linkedin-profile-api/internal/linkedin"
-	"github.com/ayushsharma/linkedin-profile-api/internal/model"
-	"github.com/ayushsharma/linkedin-profile-api/internal/urlparse"
+	"github.com/ayush3160/linkedin-profile-api-go/internal/cache"
+	"github.com/ayush3160/linkedin-profile-api-go/internal/config"
+	"github.com/ayush3160/linkedin-profile-api-go/internal/linkedin"
+	"github.com/ayush3160/linkedin-profile-api-go/internal/model"
+	"github.com/ayush3160/linkedin-profile-api-go/internal/urlparse"
 )
 
 // Version is reported by /health.

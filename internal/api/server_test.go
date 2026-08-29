@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ayushsharma/linkedin-profile-api/internal/config"
-	"github.com/ayushsharma/linkedin-profile-api/internal/linkedin"
-	"github.com/ayushsharma/linkedin-profile-api/internal/model"
-	"github.com/ayushsharma/linkedin-profile-api/internal/testdata"
+	"github.com/ayush3160/linkedin-profile-api-go/internal/config"
+	"github.com/ayush3160/linkedin-profile-api-go/internal/linkedin"
+	"github.com/ayush3160/linkedin-profile-api-go/internal/model"
+	"github.com/ayush3160/linkedin-profile-api-go/internal/testdata"
 )
 
 // stubFetcher stands in for the LinkedIn client so the route can be exercised
