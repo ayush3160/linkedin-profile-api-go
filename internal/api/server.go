@@ -39,6 +39,12 @@ type Server struct {
 	log     *slog.Logger
 	started time.Time
 
+	// budgets are global caps on requests that actually reach LinkedIn. The
+	// per-IP limiter can be evaded by rotating source addresses; these cannot,
+	// because they sit on the single code path to the upstream session.
+	hourly *cache.Budget
+	daily  *cache.Budget
+
 	// gate serialises profile fetches: a burst of parallel fetches from one
 	// LinkedIn session is what gets an account challenged.
 	gate      sync.Mutex
@@ -56,6 +62,8 @@ func New(cfg config.Config, fetcher Fetcher, logger *slog.Logger) *Server {
 		fetcher: fetcher,
 		cache:   cache.NewTTL(cfg.CacheTTL, cfg.CacheMaxEntries),
 		limiter: cache.NewRateLimiter(cfg.RateLimitRequests, cfg.RateLimitWindow),
+		hourly:  cache.NewBudget("hourly", cfg.UpstreamHourly, time.Hour),
+		daily:   cache.NewBudget("daily", cfg.UpstreamDaily, 24*time.Hour),
 		log:     logger,
 		started: time.Now(),
 		sleep:   time.Sleep,
@@ -80,6 +88,8 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 		SessionConfigured: s.cfg.SessionConfigured(),
 		CacheEntries:      s.cache.Len(),
 		UptimeSeconds:     int64(time.Since(s.started).Seconds()),
+		HourlyRemaining:   s.hourly.Remaining(),
+		DailyRemaining:    s.daily.Remaining(),
 	})
 }
 
@@ -87,13 +97,7 @@ func (s *Server) handleProfile(w http.ResponseWriter, r *http.Request) {
 	if !s.authorised(w, r) {
 		return
 	}
-	if allowed, retryAfter := s.limiter.Check(clientKey(r)); !allowed {
-		w.Header().Set("Retry-After", strconv.Itoa(int(retryAfter.Seconds())+1))
-		writeError(w, &linkedin.Error{
-			Status: http.StatusTooManyRequests, Code: "rate_limited",
-			Message: "too many requests",
-			Detail:  "retry after " + strconv.Itoa(int(retryAfter.Seconds())+1) + "s",
-		})
+	if s.throttled(w, r) {
 		return
 	}
 
@@ -143,6 +147,9 @@ func (s *Server) handleRaw(w http.ResponseWriter, r *http.Request) {
 	if !s.authorised(w, r) {
 		return
 	}
+	if s.throttled(w, r) {
+		return
+	}
 	vanity, err := urlparse.ExtractVanity(r.URL.Query().Get("url"))
 	if err != nil {
 		writeError(w, err)
@@ -188,10 +195,26 @@ func (s *Server) handleRaw(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"vanity_name": vanity, "cards": out})
 }
 
-// fetchCards throttles to one profile at a time with a floor between fetches.
+// fetchCards is the only path to LinkedIn. It serialises fetches, keeps a
+// floor between them, and spends the global budgets -- all under one lock, so
+// the check-then-spend below cannot race.
+//
+// A budget is spent before the fetch rather than after, so an upstream failure
+// still costs a unit. That is the conservative direction: a session that is
+// erroring is exactly the one that should be backing off.
 func (s *Server) fetchCards(ctx context.Context, vanity string, includeActivity bool) (map[string]string, error) {
 	s.gate.Lock()
 	defer s.gate.Unlock()
+
+	for _, budget := range []*cache.Budget{s.hourly, s.daily} {
+		if ok, resetIn := budget.Available(); !ok {
+			return nil, linkedin.ErrBudgetExhausted(budget.Name(), resetIn)
+		}
+	}
+	for _, budget := range []*cache.Budget{s.hourly, s.daily} {
+		budget.Spend()
+	}
+
 	if gap := s.cfg.MinBetweenProfiles - time.Since(s.lastFetch); gap > 0 && !s.lastFetch.IsZero() {
 		s.sleep(gap)
 	}
@@ -217,9 +240,37 @@ func (s *Server) authorised(w http.ResponseWriter, r *http.Request) bool {
 	return false
 }
 
+// throttled applies the per-IP limit and writes the 429 if it trips. It gates
+// every handler that can reach LinkedIn.
+func (s *Server) throttled(w http.ResponseWriter, r *http.Request) bool {
+	allowed, retryAfter := s.limiter.Check(clientKey(r))
+	if allowed {
+		return false
+	}
+	writeError(w, &linkedin.Error{
+		Status: http.StatusTooManyRequests, Code: "rate_limited",
+		Message:    "too many requests",
+		Detail:     "per-IP limit",
+		RetryAfter: retryAfter,
+	})
+	return true
+}
+
+// clientKey identifies the caller for rate limiting.
+//
+// X-Forwarded-For is caller-supplied and every proxy appends to it, so the
+// leftmost entry is whatever the caller claimed and the rightmost is the one
+// our own edge added. Reading the rightmost is what makes the limit survive a
+// caller who rotates the header to mint fresh buckets.
 func clientKey(r *http.Request) string {
+	if flyIP := strings.TrimSpace(r.Header.Get("Fly-Client-IP")); flyIP != "" {
+		return flyIP
+	}
 	if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
-		return strings.TrimSpace(strings.Split(forwarded, ",")[0])
+		parts := strings.Split(forwarded, ",")
+		if last := strings.TrimSpace(parts[len(parts)-1]); last != "" {
+			return last
+		}
 	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
@@ -243,6 +294,9 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 
 func writeError(w http.ResponseWriter, err error) {
 	if domain, ok := linkedin.AsError(err); ok {
+		if domain.RetryAfter > 0 {
+			w.Header().Set("Retry-After", strconv.Itoa(int(domain.RetryAfter.Seconds())+1))
+		}
 		writeJSON(w, domain.Status, model.ErrorResponse{
 			Error: domain.Message, Code: domain.Code, Detail: domain.Detail,
 		})

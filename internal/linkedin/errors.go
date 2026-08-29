@@ -1,6 +1,9 @@
 package linkedin
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 // Error is a domain error carrying the HTTP status the API should return.
 type Error struct {
@@ -8,6 +11,8 @@ type Error struct {
 	Code    string
 	Message string
 	Detail  string
+	// RetryAfter, when set, becomes the Retry-After response header.
+	RetryAfter time.Duration
 }
 
 func (e *Error) Error() string {
@@ -48,4 +53,16 @@ func errUpstream(message, detail string) *Error {
 // ErrUnparseable reports a response that was not a Flight stream.
 func ErrUnparseable(message, detail string) *Error {
 	return &Error{Status: 502, Code: "unparseable_response", Message: message, Detail: detail}
+}
+
+// ErrBudgetExhausted reports that a global upstream budget for the window is
+// spent. It is deliberately a 429 rather than a 503: the service is healthy,
+// the caller may simply not spend any more of the backing session right now.
+func ErrBudgetExhausted(window string, resetIn time.Duration) *Error {
+	return &Error{
+		Status: 429, Code: "budget_exhausted",
+		Message:    "upstream " + window + " budget exhausted",
+		Detail:     "global cap protecting the backing LinkedIn session; resets in " + resetIn.Round(time.Second).String(),
+		RetryAfter: resetIn,
+	}
 }

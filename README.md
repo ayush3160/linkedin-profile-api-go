@@ -22,6 +22,7 @@ service speaks that protocol directly and reconstructs a data model from it.
 - [API documentation](#api-documentation)
 - [Approach](#approach)
 - [Architecture](#architecture)
+- [Protecting the backing session](#protecting-the-backing-session)
 - [Deployment](#deployment)
 - [Testing](#testing)
 - [Secrets](#secrets)
@@ -174,6 +175,7 @@ All errors share one shape: `{"error": "...", "code": "...", "detail": "..."}`.
 | 401 | `unauthorized` | `API_KEYS` is set and `X-API-Key` was missing or wrong. |
 | 404 | `profile_not_found` | LinkedIn returned 404 for that vanity name. |
 | 429 | `rate_limited` | This client exceeded the configured rate. Carries `Retry-After`. |
+| 429 | `budget_exhausted` | Global upstream budget spent. Protects the backing session; `Retry-After` says when it frees up. |
 | 502 | `upstream_error` / `unparseable_response` | LinkedIn returned something unexpected. |
 | 503 | `session_expired` | Cookies missing, expired, or bounced to the auth wall. **Refresh `LI_AT`.** |
 | 503 | `upstream_rate_limited` | LinkedIn is throttling the backing account. Back off. |
@@ -188,11 +190,13 @@ All errors share one shape: `{"error": "...", "code": "...", "detail": "..."}`.
 | `PORT` | `8000` | Listen port. |
 | `CACHE_TTL_SECONDS` | `3600` | Profile cache TTL. `0` disables. |
 | `CACHE_MAX_ENTRIES` | `512` | LRU bound. |
-| `RATE_LIMIT_REQUESTS` | `20` | Per client IP, per window. |
+| `RATE_LIMIT_REQUESTS` | `10` | Per client IP, per window. |
 | `RATE_LIMIT_WINDOW_SECONDS` | `60` | Rate limit window. |
+| `UPSTREAM_HOURLY_BUDGET` | `20` | Global cap on fetches that reach LinkedIn, rolling hour. `0` disables. |
+| `UPSTREAM_DAILY_BUDGET` | `100` | Same, rolling day. `0` disables. |
 | `UPSTREAM_CONCURRENCY` | `4` | Parallel card fetches within one profile. |
 | `UPSTREAM_TIMEOUT_SECONDS` | `30` | Per-request timeout. |
-| `MIN_SECONDS_BETWEEN_PROFILES` | `2` | Floor on how fast we hit LinkedIn. |
+| `MIN_SECONDS_BETWEEN_PROFILES` | `10` | Floor on how fast we hit LinkedIn. |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error`. |
 
 Environment wins over `.env`, so a PaaS dashboard always overrides the file.
@@ -400,6 +404,41 @@ binary in a distroless image with no supply chain to audit.
 
 ---
 
+## Protecting the backing session
+
+The service holds one real LinkedIn session, so the thing worth defending is
+not the server's CPU -- it is the account. Four controls stack, cheapest first:
+
+| Control | Default | Scope |
+| --- | --- | --- |
+| API key | off unless `API_KEYS` is set | Rejects unauthenticated callers before anything else runs |
+| Per-IP rate limit | 10 / 60s | One caller |
+| Cache | 1h TTL | Repeats never reach LinkedIn |
+| Upstream budget | 20/hour, 100/day | **Global** -- every caller, every route, combined |
+
+The budget is the one that actually protects the account. A per-IP limit is
+only as trustworthy as the client address, and `X-Forwarded-For` is written by
+the caller: each proxy *appends*, so the leftmost entry is whatever the caller
+claimed. Reading the leftmost entry lets anyone mint a fresh bucket per request
+by rotating a header. `clientKey` reads the **rightmost** entry -- the one our
+own edge appended -- and prefers `Fly-Client-IP` where the platform sets it.
+
+The budget sits inside `fetchCards`, the single function that reaches LinkedIn,
+under the same lock that serialises fetches. So it covers `/profile` and `/raw`
+alike, it cannot be raced, and no amount of IP rotation moves it. Units are
+spent *before* the fetch, so a failing upstream still costs budget -- an
+erroring session is exactly the one that should be backing off.
+
+`GET /health` reports `upstream_hourly_remaining` and `upstream_daily_remaining`
+so you can see how much of the day's allowance is left without reading logs.
+
+For calibration: PhantomBuster publishes ~1,500 profiles/day as the safe
+ceiling for one account. The default here is 100/day, a ~15x margin, because
+this is a demonstration service and a restricted account is not worth the
+throughput.
+
+---
+
 ## Deployment
 
 Stateless container listening on `$PORT`. Anything that runs a Dockerfile and
@@ -412,13 +451,38 @@ terminates TLS will do.
 # set LI_AT and LI_JSESSIONID in the dashboard (render.yaml marks them sync:false)
 ```
 
-**Fly.io**:
+**Fly.io** (what the live deployment runs):
 
 ```bash
-fly launch --no-deploy
-fly secrets set LI_AT='…' LI_JSESSIONID='ajax:…'
+fly launch --no-deploy                       # app names are globally unique --
+                                             # if it renames the app, update fly.toml
+fly secrets set LI_AT='…' LI_JSESSIONID='ajax:…' API_KEYS='…'
 fly deploy
 ```
+
+`fly.toml` sets `min_machines_running = 1` and `auto_stop_machines = "off"`, so
+one machine stays warm and the first caller of the day does not pay a cold
+start. That is the whole reason for those two lines -- with the defaults the
+machine sleeps and the next request waits for a boot.
+
+### Continuous deployment
+
+`.github/workflows/deploy.yml` redeploys on every merge to `main`, but only
+after CI passes -- it triggers on CI's `workflow_run` completion rather than on
+push, so a red build never replaces a running deployment. It then polls
+`/health` up to five times and fails the run if the new version never reports
+`status: ok`.
+
+One repository secret is required:
+
+```bash
+fly tokens create deploy -x 999999h          # then paste into:
+# GitHub > Settings > Secrets and variables > Actions > New secret
+#   Name: FLY_API_TOKEN
+```
+
+`LI_AT`, `LI_JSESSIONID` and `API_KEYS` live in `fly secrets`, never in GitHub
+Actions -- the workflow deploys the image and never sees them.
 
 **Docker anywhere**:
 
@@ -435,7 +499,7 @@ static `CGO_ENABLED=0` binary, so it runs as non-root with no shell and no libc.
 ## Testing
 
 ```bash
-make test     # 63 tests
+make test     # 68 tests
 make race     # same, under the race detector
 make lint     # gofmt + go vet
 ```
@@ -507,9 +571,10 @@ eventually break field mapping. `meta.warnings` and `meta.sections_found` are
 the canary — monitor them.
 
 **Single-session throughput.** One LinkedIn account is one bottleneck, and
-deliberately so: fetches are serialised with a configurable floor between
-profiles. This is not a bulk-scraping service, and turning the throttles off is
-how accounts get challenged or restricted.
+deliberately so: fetches are serialised, with a 10s floor between profiles and
+a global budget of 20/hour and 100/day. This is not a bulk-scraping service,
+and turning the throttles off is how accounts get challenged or restricted.
+Raise `UPSTREAM_DAILY_BUDGET` knowing exactly what you are spending.
 
 **Session expiry is manual.** `li_at` lasts roughly a year but is invalidated
 by password changes and security challenges. When it dies every call returns
@@ -517,8 +582,13 @@ by password changes and security challenges. When it dies every call returns
 automated login — LinkedIn's login flow is challenge-protected by design, and
 automating it is both fragile and a good way to lose the account.
 
-**In-memory cache and rate limiter.** Fine for one instance; both need Redis
-behind multiple replicas. `internal/cache` is small enough to swap.
+**In-memory cache, rate limiter and budgets.** All three are per-process, so a
+restart or a redeploy resets the spent budget to zero -- deploy repeatedly in
+one day and the daily cap is not the cap you think it is. Behind multiple
+replicas each gets its own full allowance, which multiplies the real upstream
+rate by the replica count. Both are the same fix: move the counters to Redis.
+`internal/cache` is deliberately small enough to swap. For a single always-on
+machine, which is how this is deployed, neither bites.
 
 **Terms of service.** LinkedIn's User Agreement prohibits automated data
 collection, and this service works by holding a real member session. It is

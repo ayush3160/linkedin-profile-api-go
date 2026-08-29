@@ -136,4 +136,8 @@ type HealthResponse struct {
 	SessionConfigured bool   `json:"session_configured"`
 	CacheEntries      int    `json:"cache_entries"`
 	UptimeSeconds     int64  `json:"uptime_seconds"`
+	// Remaining units in the global upstream budgets. -1 means the budget is
+	// disabled. Watch these to see how much of the session is left today.
+	HourlyRemaining int `json:"upstream_hourly_remaining"`
+	DailyRemaining  int `json:"upstream_daily_remaining"`
 }

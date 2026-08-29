@@ -81,3 +81,48 @@ func TestZeroLimitDisablesRateLimiting(t *testing.T) {
 		}
 	}
 }
+
+func TestBudgetCapsThenRecoversAsTheWindowSlides(t *testing.T) {
+	clock := time.Now()
+	budget := NewBudget("daily", 2, time.Hour)
+	budget.now = func() time.Time { return clock }
+
+	for i := range 2 {
+		if ok, _ := budget.Available(); !ok {
+			t.Fatalf("unit %d should be available", i)
+		}
+		budget.Spend()
+	}
+	ok, resetIn := budget.Available()
+	if ok {
+		t.Fatal("third unit should be over budget")
+	}
+	if resetIn <= 0 || resetIn > time.Hour {
+		t.Errorf("resetIn = %v, want within the window", resetIn)
+	}
+	if remaining := budget.Remaining(); remaining != 0 {
+		t.Errorf("remaining = %d, want 0", remaining)
+	}
+
+	// Slide past the window and the spent units fall out.
+	clock = clock.Add(time.Hour + time.Second)
+	if ok, _ := budget.Available(); !ok {
+		t.Error("budget should recover once the window has passed")
+	}
+	if remaining := budget.Remaining(); remaining != 2 {
+		t.Errorf("remaining = %d, want 2", remaining)
+	}
+}
+
+func TestBudgetOfZeroIsDisabled(t *testing.T) {
+	budget := NewBudget("off", 0, time.Hour)
+	for range 100 {
+		if ok, _ := budget.Available(); !ok {
+			t.Fatal("a zero limit disables the budget")
+		}
+		budget.Spend()
+	}
+	if remaining := budget.Remaining(); remaining != -1 {
+		t.Errorf("remaining = %d, want -1 for a disabled budget", remaining)
+	}
+}

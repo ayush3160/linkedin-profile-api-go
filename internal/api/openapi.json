@@ -23,7 +23,7 @@
           "400": {"description": "Malformed profile URL", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
           "401": {"description": "Missing or invalid X-API-Key", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
           "404": {"description": "Profile not found", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
-          "429": {"description": "Client rate limit exceeded", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "429": {"description": "Per-IP rate limit or global upstream budget exhausted", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
           "502": {"description": "Upstream error", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
           "503": {"description": "LinkedIn session unusable", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}
         }
@@ -52,7 +52,7 @@
         "type": "object",
         "properties": {
           "error": {"type": "string"},
-          "code": {"type": "string", "enum": ["invalid_profile_url", "unauthorized", "profile_not_found", "rate_limited", "upstream_error", "unparseable_response", "session_expired", "upstream_rate_limited"]},
+          "code": {"type": "string", "enum": ["invalid_profile_url", "unauthorized", "profile_not_found", "rate_limited", "upstream_error", "unparseable_response", "session_expired", "upstream_rate_limited", "budget_exhausted"]},
           "detail": {"type": "string"}
         }
       },
@@ -63,7 +63,9 @@
           "version": {"type": "string"},
           "session_configured": {"type": "boolean"},
           "cache_entries": {"type": "integer"},
-          "uptime_seconds": {"type": "integer"}
+          "uptime_seconds": {"type": "integer"},
+          "upstream_hourly_remaining": {"type": "integer", "description": "Fetches left in the rolling hour. -1 if disabled."},
+          "upstream_daily_remaining": {"type": "integer", "description": "Fetches left in the rolling day. -1 if disabled."}
         }
       },
       "Rendition": {

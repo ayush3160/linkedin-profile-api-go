@@ -253,3 +253,124 @@ func decode(t *testing.T, response *httptest.ResponseRecorder, into any) {
 		t.Fatalf("decoding %s: %v", response.Body.String(), err)
 	}
 }
+
+// rawQuery hits the debug outline route, which also reaches LinkedIn and so
+// must be gated exactly like /profile.
+const rawQuery = "/raw?url=https://www.linkedin.com/in/" + testdata.Vanity + "/"
+
+func TestRateLimitAppliesToRawToo(t *testing.T) {
+	cfg := testConfig()
+	cfg.RateLimitRequests = 2
+	handler := newServer(t, cfg, &stubFetcher{cards: testdata.AllCards()})
+
+	for i := range 2 {
+		if response := get(t, handler, rawQuery, nil); response.Code != http.StatusOK {
+			t.Fatalf("request %d: status = %d", i, response.Code)
+		}
+	}
+	if response := get(t, handler, rawQuery, nil); response.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429 -- /raw must not be an unmetered path to LinkedIn", response.Code)
+	}
+}
+
+func TestForgedForwardedForCannotMintFreshBuckets(t *testing.T) {
+	cfg := testConfig()
+	cfg.RateLimitRequests = 2
+	handler := newServer(t, cfg, &stubFetcher{cards: testdata.AllCards()})
+
+	// The caller claims a different origin on every request. Our edge appends
+	// the real address, so the rightmost entry stays constant and the limit
+	// must still bite.
+	forge := func(claimed string) map[string]string {
+		return map[string]string{"X-Forwarded-For": claimed + ", 203.0.113.9"}
+	}
+	for i, claimed := range []string{"1.1.1.1", "2.2.2.2"} {
+		if response := get(t, handler, profileQuery, forge(claimed)); response.Code != http.StatusOK {
+			t.Fatalf("request %d: status = %d", i, response.Code)
+		}
+	}
+	response := get(t, handler, profileQuery, forge("3.3.3.3"))
+	if response.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429 -- rotating X-Forwarded-For must not reset the limit", response.Code)
+	}
+}
+
+func TestDistinctClientsGetSeparateBuckets(t *testing.T) {
+	cfg := testConfig()
+	cfg.RateLimitRequests = 1
+	handler := newServer(t, cfg, &stubFetcher{cards: testdata.AllCards()})
+
+	first := get(t, handler, profileQuery, map[string]string{"X-Forwarded-For": "198.51.100.1"})
+	second := get(t, handler, profileQuery, map[string]string{"X-Forwarded-For": "198.51.100.2"})
+	if first.Code != http.StatusOK || second.Code != http.StatusOK {
+		t.Fatalf("statuses = %d, %d; separate clients must not share a bucket", first.Code, second.Code)
+	}
+}
+
+func TestUpstreamBudgetCapsFetchesAcrossAllClients(t *testing.T) {
+	cfg := testConfig()
+	cfg.UpstreamDaily = 2
+	fetcher := &stubFetcher{cards: testdata.AllCards()}
+	handler := newServer(t, cfg, fetcher)
+
+	// Every request looks like a different caller and asks for a different
+	// profile, so neither the per-IP limiter nor the cache absorbs it. Only
+	// the global budget stands between this and the LinkedIn session.
+	for i, vanity := range []string{"alpha", "beta"} {
+		headers := map[string]string{"X-Forwarded-For": "203.0.113." + string(rune('1'+i))}
+		if response := get(t, handler, "/profile?url="+vanity, headers); response.Code != http.StatusOK {
+			t.Fatalf("request %d: status = %d", i, response.Code)
+		}
+	}
+
+	response := get(t, handler, "/profile?url=gamma", map[string]string{"X-Forwarded-For": "203.0.113.9"})
+	if response.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429", response.Code)
+	}
+	var body model.ErrorResponse
+	decode(t, response, &body)
+	if body.Code != "budget_exhausted" {
+		t.Errorf("code = %q, want budget_exhausted", body.Code)
+	}
+	if response.Header().Get("Retry-After") == "" {
+		t.Error("budget 429 should carry Retry-After")
+	}
+	if fetcher.calls != 2 {
+		t.Errorf("upstream calls = %d, want 2 -- the budget must stop the fetch, not just the response", fetcher.calls)
+	}
+}
+
+func TestCachedRepeatsDoNotSpendBudget(t *testing.T) {
+	cfg := testConfig()
+	cfg.UpstreamDaily = 1
+	fetcher := &stubFetcher{cards: testdata.AllCards()}
+	handler := newServer(t, cfg, fetcher)
+
+	for i := range 3 {
+		if response := get(t, handler, profileQuery, nil); response.Code != http.StatusOK {
+			t.Fatalf("request %d: status = %d -- a cache hit must not cost budget", i, response.Code)
+		}
+	}
+	if fetcher.calls != 1 {
+		t.Errorf("upstream calls = %d, want 1", fetcher.calls)
+	}
+}
+
+func TestHealthReportsRemainingBudget(t *testing.T) {
+	cfg := testConfig()
+	cfg.UpstreamDaily = 5
+	cfg.UpstreamHourly = 3
+	handler := newServer(t, cfg, &stubFetcher{cards: testdata.AllCards()})
+
+	if response := get(t, handler, profileQuery, nil); response.Code != http.StatusOK {
+		t.Fatalf("status = %d", response.Code)
+	}
+	var health model.HealthResponse
+	decode(t, get(t, handler, "/health", nil), &health)
+	if health.DailyRemaining != 4 {
+		t.Errorf("daily remaining = %d, want 4", health.DailyRemaining)
+	}
+	if health.HourlyRemaining != 2 {
+		t.Errorf("hourly remaining = %d, want 2", health.HourlyRemaining)
+	}
+}

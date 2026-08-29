@@ -131,3 +131,80 @@ func (r *RateLimiter) Check(key string) (bool, time.Duration) {
 	r.hits[key] = append(kept, now)
 	return true, 0
 }
+
+// Budget is a global rolling-window cap on an action, independent of caller.
+//
+// The per-IP limiter protects the service; a budget protects the LinkedIn
+// account behind it. Someone who rotates source IPs defeats the former and
+// still cannot spend more of the session than a budget allows.
+type Budget struct {
+	mu     sync.Mutex
+	name   string
+	limit  int
+	window time.Duration
+	hits   []time.Time
+	now    func() time.Time
+}
+
+// NewBudget builds a budget. A limit of zero or less disables it.
+func NewBudget(name string, limit int, window time.Duration) *Budget {
+	return &Budget{name: name, limit: limit, window: window, now: time.Now}
+}
+
+// Name identifies the budget in error messages.
+func (b *Budget) Name() string { return b.name }
+
+// prune drops hits that have fallen out of the window. Caller holds the lock.
+func (b *Budget) prune(now time.Time) {
+	cutoff := now.Add(-b.window)
+	kept := b.hits[:0]
+	for _, hit := range b.hits {
+		if hit.After(cutoff) {
+			kept = append(kept, hit)
+		}
+	}
+	b.hits = kept
+}
+
+// Available reports whether a unit could be spent, without spending it, plus
+// how long until the oldest unit falls out of the window.
+func (b *Budget) Available() (bool, time.Duration) {
+	if b.limit <= 0 {
+		return true, 0
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	now := b.now()
+	b.prune(now)
+	if len(b.hits) >= b.limit {
+		return false, b.window - now.Sub(b.hits[0])
+	}
+	return true, 0
+}
+
+// Spend records one unit against the budget.
+func (b *Budget) Spend() {
+	if b.limit <= 0 {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	now := b.now()
+	b.prune(now)
+	b.hits = append(b.hits, now)
+}
+
+// Remaining is how many units are left in the current window. A disabled
+// budget reports -1.
+func (b *Budget) Remaining() int {
+	if b.limit <= 0 {
+		return -1
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.prune(b.now())
+	if remaining := b.limit - len(b.hits); remaining > 0 {
+		return remaining
+	}
+	return 0
+}

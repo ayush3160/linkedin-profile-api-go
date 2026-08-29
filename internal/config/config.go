@@ -21,6 +21,8 @@ type Config struct {
 	CacheMaxEntries     int
 	RateLimitRequests   int
 	RateLimitWindow     time.Duration
+	UpstreamHourly      int
+	UpstreamDaily       int
 	UpstreamConcurrency int
 	UpstreamTimeout     time.Duration
 	MinBetweenProfiles  time.Duration
@@ -42,11 +44,13 @@ func Load(envFile string) Config {
 		Port:                getenv("PORT", "8000"),
 		CacheTTL:            time.Duration(getenvInt("CACHE_TTL_SECONDS", 3600)) * time.Second,
 		CacheMaxEntries:     getenvInt("CACHE_MAX_ENTRIES", 512),
-		RateLimitRequests:   getenvInt("RATE_LIMIT_REQUESTS", 20),
+		RateLimitRequests:   getenvInt("RATE_LIMIT_REQUESTS", 10),
 		RateLimitWindow:     time.Duration(getenvInt("RATE_LIMIT_WINDOW_SECONDS", 60)) * time.Second,
+		UpstreamHourly:      getenvInt("UPSTREAM_HOURLY_BUDGET", 20),
+		UpstreamDaily:       getenvInt("UPSTREAM_DAILY_BUDGET", 100),
 		UpstreamConcurrency: getenvInt("UPSTREAM_CONCURRENCY", 4),
 		UpstreamTimeout:     time.Duration(getenvInt("UPSTREAM_TIMEOUT_SECONDS", 30)) * time.Second,
-		MinBetweenProfiles:  time.Duration(getenvInt("MIN_SECONDS_BETWEEN_PROFILES", 2)) * time.Second,
+		MinBetweenProfiles:  time.Duration(getenvInt("MIN_SECONDS_BETWEEN_PROFILES", 10)) * time.Second,
 		LogLevel:            getenv("LOG_LEVEL", "info"),
 	}
 }
