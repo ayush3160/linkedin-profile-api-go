@@ -46,6 +46,12 @@ type Server struct {
 	hourly *cache.Budget
 	daily  *cache.Budget
 
+	// anon is the free allowance for callers with no API key, per address per
+	// day. Without it a reviewer handed a bare URL gets a 401 and no way to
+	// resolve it; with it the URL works out of the box and sustained use still
+	// needs a key.
+	anon *cache.RateLimiter
+
 	// gate serialises profile fetches: a burst of parallel fetches from one
 	// LinkedIn session is what gets an account challenged.
 	gate      sync.Mutex
@@ -65,6 +71,7 @@ func New(cfg config.Config, fetcher Fetcher, logger *slog.Logger) *Server {
 		limiter: cache.NewRateLimiter(cfg.RateLimitRequests, cfg.RateLimitWindow),
 		hourly:  cache.NewBudget("hourly", cfg.UpstreamHourly, time.Hour),
 		daily:   cache.NewBudget("daily", cfg.UpstreamDaily, 24*time.Hour),
+		anon:    cache.NewRateLimiter(cfg.AnonPerDay, 24*time.Hour),
 		log:     logger,
 		started: time.Now(),
 		sleep:   time.Sleep,
@@ -95,7 +102,8 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) handleProfile(w http.ResponseWriter, r *http.Request) {
-	if !s.authorised(w, r) {
+	proceed, authenticated := s.authenticate(w, r)
+	if !proceed {
 		return
 	}
 	if s.throttled(w, r) {
@@ -128,8 +136,18 @@ func (s *Server) handleProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Checked here, not at the door: a cache hit reaches LinkedIn not at all,
+	// and charging for it would spend a reviewer's allowance on repeats of the
+	// same request.
+	if !authenticated && !s.anonymousAllowed(w, r) {
+		return
+	}
+
 	started := time.Now()
 	fetched, err := s.fetchCards(r.Context(), vanity, includeActivity)
+	if !authenticated {
+		s.anon.Check(clientKey(r))
+	}
 	if err != nil {
 		writeError(w, err)
 		return
@@ -164,7 +182,8 @@ func (s *Server) handleProfile(w http.ResponseWriter, r *http.Request) {
 // comes back empty this shows whether the data was missing from the page or
 // lost in mapping.
 func (s *Server) handleRaw(w http.ResponseWriter, r *http.Request) {
-	if !s.authorised(w, r) {
+	proceed, authenticated := s.authenticate(w, r)
+	if !proceed {
 		return
 	}
 	if s.throttled(w, r) {
@@ -182,7 +201,13 @@ func (s *Server) handleRaw(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	if !authenticated && !s.anonymousAllowed(w, r) {
+		return
+	}
 	fetched, err := s.fetchCards(r.Context(), vanity, boolParam(r, "include_activity"))
+	if !authenticated {
+		s.anon.Check(clientKey(r))
+	}
 	if err != nil {
 		writeError(w, err)
 		return
@@ -246,21 +271,44 @@ func (s *Server) fetchCards(ctx context.Context, vanity string, includeActivity 
 	return result, err
 }
 
-func (s *Server) authorised(w http.ResponseWriter, r *http.Request) bool {
+// authenticate reports whether the request may proceed, and whether it proved
+// an API key.
+//
+// A missing key is not a rejection: the caller falls back to the anonymous
+// allowance, so a published URL works without instructions. A key that is
+// present but wrong is a rejection -- that is a mistake or a guess, and
+// silently downgrading it to anonymous would hide both.
+func (s *Server) authenticate(w http.ResponseWriter, r *http.Request) (proceed, authenticated bool) {
 	if len(s.cfg.APIKeys) == 0 {
-		return true
+		return true, true
 	}
 	provided := r.Header.Get("X-API-Key")
+	if provided == "" {
+		return true, false
+	}
 	for _, key := range s.cfg.APIKeys {
 		if provided == key {
-			return true
+			return true, true
 		}
 	}
-	s.log.Warn("unauthorized", "client", clientKey(r), "path", r.URL.Path)
+	s.log.Warn("invalid api key", "client", clientKey(r), "path", r.URL.Path)
 	writeError(w, &linkedin.Error{
 		Status: http.StatusUnauthorized, Code: "unauthorized",
-		Message: "missing or invalid X-API-Key",
+		Message: "invalid X-API-Key",
+		Detail:  "omit the header entirely to use the anonymous allowance",
 	})
+	return false, false
+}
+
+// anonymousAllowed checks the free allowance without spending it, so the
+// caller is told early and charged only when a fetch actually happens.
+func (s *Server) anonymousAllowed(w http.ResponseWriter, r *http.Request) bool {
+	ok, resetIn := s.anon.Available(clientKey(r))
+	if ok {
+		return true
+	}
+	s.log.Warn("anonymous quota exhausted", "client", clientKey(r), "path", r.URL.Path)
+	writeError(w, linkedin.ErrAnonymousQuotaExhausted(s.cfg.AnonPerDay, resetIn))
 	return false
 }
 

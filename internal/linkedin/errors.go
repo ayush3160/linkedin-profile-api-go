@@ -66,3 +66,16 @@ func ErrBudgetExhausted(window string, resetIn time.Duration) *Error {
 		RetryAfter: resetIn,
 	}
 }
+
+// ErrAnonymousQuotaExhausted reports that a caller without an API key has used
+// its free allowance. It names the header rather than just refusing, because
+// the caller has no other way to learn one exists.
+func ErrAnonymousQuotaExhausted(perDay int, resetIn time.Duration) *Error {
+	return &Error{
+		Status: 429, Code: "anonymous_quota_exhausted",
+		Message: fmt.Sprintf("free allowance of %d profiles per day is used up", perDay),
+		Detail: "send an API key in the X-API-Key header for the full allowance, " +
+			"or retry in " + resetIn.Round(time.Minute).String(),
+		RetryAfter: resetIn,
+	}
+}

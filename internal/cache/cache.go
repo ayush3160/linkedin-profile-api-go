@@ -107,6 +107,38 @@ func NewRateLimiter(limit int, window time.Duration) *RateLimiter {
 	return &RateLimiter{limit: limit, window: window, hits: map[string][]time.Time{}, now: time.Now}
 }
 
+// Available reports whether a hit would be allowed, without recording one.
+//
+// Callers that only spend the allowance when work actually happens need to
+// answer the caller early but charge them late.
+func (r *RateLimiter) Available(key string) (bool, time.Duration) {
+	if r.limit <= 0 {
+		return true, 0
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	now := r.now()
+	kept := r.prune(key, now)
+	if len(kept) >= r.limit {
+		return false, r.window - now.Sub(kept[0])
+	}
+	return true, 0
+}
+
+// prune drops hits outside the window and returns what is left. Caller holds
+// the lock.
+func (r *RateLimiter) prune(key string, now time.Time) []time.Time {
+	cutoff := now.Add(-r.window)
+	kept := r.hits[key][:0]
+	for _, hit := range r.hits[key] {
+		if hit.After(cutoff) {
+			kept = append(kept, hit)
+		}
+	}
+	r.hits[key] = kept
+	return kept
+}
+
 // Check records a hit and reports whether it is allowed, plus how long to wait.
 func (r *RateLimiter) Check(key string) (bool, time.Duration) {
 	if r.limit <= 0 {
@@ -115,16 +147,7 @@ func (r *RateLimiter) Check(key string) (bool, time.Duration) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	now := r.now()
-	cutoff := now.Add(-r.window)
-
-	kept := r.hits[key][:0]
-	for _, hit := range r.hits[key] {
-		if hit.After(cutoff) {
-			kept = append(kept, hit)
-		}
-	}
-	r.hits[key] = kept
-
+	kept := r.prune(key, now)
 	if len(kept) >= r.limit {
 		return false, r.window - now.Sub(kept[0])
 	}

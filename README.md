@@ -3,9 +3,10 @@
 Give it a LinkedIn profile URL, get structured JSON back.
 
 ```bash
-curl "https://linkedin-profile-api-go.fly.dev/profile?url=https://www.linkedin.com/in/williamhgates/" \
-  -H "X-API-Key: <key>"
+curl "https://linkedin-profile-api-go.fly.dev/profile?url=https://www.linkedin.com/in/ayush-sharma-6b5803235"
 ```
+
+No key needed to try it. Quote the URL -- `?` and `&` are shell metacharacters.
 
 LinkedIn's current web app (`flagship-web`) does not serve profile data as JSON.
 There is no `/voyager/api/...` call behind a profile page any more — the page is
@@ -13,7 +14,7 @@ a **React Server Components stream** carrying a **server-driven UI** tree. This
 service speaks that protocol directly and reconstructs a data model from it.
 
 - **Live API:** <https://linkedin-profile-api-go.fly.dev> — docs at `/`, schema at `/openapi.json`, liveness at `/health`
-- **Auth:** `X-API-Key` header. The deployment sets `API_KEYS`, so the key is required.
+- **Auth:** none required to try it. Every caller gets 10 profiles a day for free; past that, send an API key in the `X-API-Key` header. Cached repeats are free.
 - **Stack:** Go 1.23, **zero third-party dependencies**. Standard library only: `net/http` routing, `encoding/json`, `log/slog`. No browser, no headless Chrome.
 
 ---
@@ -74,7 +75,22 @@ Human docs at `/`, machine-readable OpenAPI 3 at `/openapi.json`.
 | `include_activity` | bool | `false` | Also fetch recent posts. Adds several MB and ~1.5s — off by default. |
 | `refresh` | bool | `false` | Bypass the cache for this call. |
 
-Header `X-API-Key` is required only if `API_KEYS` is set on the server.
+#### Authentication
+
+There is no signup, and no key to generate. A caller with no `X-API-Key`
+header gets `ANON_PROFILES_PER_DAY` profiles a day (default 10) from its own
+address, then `429 anonymous_quota_exhausted` naming the header it needs. A
+caller that sends a valid key skips that allowance entirely.
+
+Only fetches that actually reach LinkedIn are counted, so re-running the same
+request inside the cache window costs nothing.
+
+A header that is present but *wrong* is a `401`, not a silent downgrade to
+anonymous -- that is a typo or a guess, and both are worth reporting. Omit the
+header entirely to use the free allowance.
+
+If `API_KEYS` is unset on the server the whole scheme is off and every request
+is treated as authenticated.
 
 <details>
 <summary><b>Example response</b> (click to expand)</summary>
@@ -177,6 +193,7 @@ All errors share one shape: `{"error": "...", "code": "...", "detail": "..."}`.
 | 401 | `unauthorized` | `API_KEYS` is set and `X-API-Key` was missing or wrong. |
 | 404 | `profile_not_found` | LinkedIn returned 404 for that vanity name. |
 | 429 | `rate_limited` | This client exceeded the configured rate. Carries `Retry-After`. |
+| 429 | `anonymous_quota_exhausted` | Free per-address allowance spent. Send `X-API-Key`, or wait out `Retry-After`. |
 | 429 | `budget_exhausted` | Global upstream budget spent. Protects the backing session; `Retry-After` says when it frees up. |
 | 502 | `upstream_error` / `unparseable_response` | LinkedIn returned something unexpected. |
 | 503 | `session_expired` | Cookies missing, expired, or bounced to the auth wall. **Refresh `LI_AT`.** |
@@ -194,6 +211,7 @@ All errors share one shape: `{"error": "...", "code": "...", "detail": "..."}`.
 | `CACHE_MAX_ENTRIES` | `512` | LRU bound. |
 | `RATE_LIMIT_REQUESTS` | `10` | Per client IP, per window. |
 | `RATE_LIMIT_WINDOW_SECONDS` | `60` | Rate limit window. |
+| `ANON_PROFILES_PER_DAY` | `10` | Free upstream fetches per address for callers with no API key. `0` disables the allowance, making a key mandatory. |
 | `UPSTREAM_HOURLY_BUDGET` | `20` | Global cap on fetches that reach LinkedIn, rolling hour. `0` disables. |
 | `UPSTREAM_DAILY_BUDGET` | `100` | Same, rolling day. `0` disables. |
 | `UPSTREAM_CONCURRENCY` | `4` | Parallel card fetches within one profile. |
@@ -511,7 +529,7 @@ static `CGO_ENABLED=0` binary, so it runs as non-root with no shell and no libc.
 ## Testing
 
 ```bash
-make test     # 82 tests
+make test     # 84 tests
 make race     # same, under the race detector
 make lint     # gofmt + go vet
 ```

@@ -199,16 +199,69 @@ func TestRateLimit(t *testing.T) {
 func TestAPIKeyEnforcedWhenConfigured(t *testing.T) {
 	cfg := testConfig()
 	cfg.APIKeys = []string{"secret-key"}
+	cfg.AnonPerDay = 5
 	handler := newServer(t, cfg, &stubFetcher{cards: testdata.AllCards()})
 
-	if response := get(t, handler, profileQuery, nil); response.Code != http.StatusUnauthorized {
-		t.Errorf("no key: status = %d, want 401", response.Code)
+	// No header at all is the published-URL case: it works, on the anonymous
+	// allowance. Rejecting it would hand a reviewer a 401 and no way to fix it.
+	if response := get(t, handler, profileQuery, nil); response.Code != http.StatusOK {
+		t.Errorf("no key: status = %d, want 200 on the anonymous allowance", response.Code)
 	}
+	// A key that is present but wrong is a mistake worth reporting, not a
+	// silent downgrade to anonymous.
 	if response := get(t, handler, profileQuery, map[string]string{"X-API-Key": "wrong"}); response.Code != http.StatusUnauthorized {
 		t.Errorf("wrong key: status = %d, want 401", response.Code)
 	}
 	if response := get(t, handler, profileQuery, map[string]string{"X-API-Key": "secret-key"}); response.Code != http.StatusOK {
 		t.Errorf("right key: status = %d, body = %s", response.Code, response.Body)
+	}
+}
+
+func TestAnonymousAllowanceRunsOutButAKeyDoesNot(t *testing.T) {
+	cfg := testConfig()
+	cfg.APIKeys = []string{"secret-key"}
+	cfg.AnonPerDay = 2
+	fetcher := &stubFetcher{cards: testdata.AllCards()}
+	handler := newServer(t, cfg, fetcher)
+
+	// Each call asks for a different profile so the cache does not absorb it.
+	for i, vanity := range []string{"alpha", "beta"} {
+		if response := get(t, handler, "/profile?url="+vanity, nil); response.Code != http.StatusOK {
+			t.Fatalf("anonymous call %d: status = %d", i, response.Code)
+		}
+	}
+	response := get(t, handler, "/profile?url=gamma", nil)
+	if response.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429 once the allowance is spent", response.Code)
+	}
+	var body model.ErrorResponse
+	decode(t, response, &body)
+	if body.Code != "anonymous_quota_exhausted" {
+		t.Errorf("code = %q, want anonymous_quota_exhausted", body.Code)
+	}
+	// The caller has no way to know a key exists unless the error says so.
+	if !strings.Contains(body.Detail, "X-API-Key") {
+		t.Errorf("detail = %q, should name the header", body.Detail)
+	}
+	if response.Header().Get("Retry-After") == "" {
+		t.Error("429 should carry Retry-After")
+	}
+	// A key is not subject to the anonymous allowance.
+	if response := get(t, handler, "/profile?url=delta", map[string]string{"X-API-Key": "secret-key"}); response.Code != http.StatusOK {
+		t.Errorf("keyed call after the allowance ran out: status = %d", response.Code)
+	}
+}
+
+func TestCachedRepeatsDoNotSpendTheAnonymousAllowance(t *testing.T) {
+	cfg := testConfig()
+	cfg.APIKeys = []string{"secret-key"}
+	cfg.AnonPerDay = 1
+	handler := newServer(t, cfg, &stubFetcher{cards: testdata.AllCards()})
+
+	for i := range 3 {
+		if response := get(t, handler, profileQuery, nil); response.Code != http.StatusOK {
+			t.Fatalf("call %d: status = %d -- a cache hit costs no upstream fetch and must be free", i, response.Code)
+		}
 	}
 }
 

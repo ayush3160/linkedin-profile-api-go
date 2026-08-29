@@ -21,6 +21,7 @@ type Config struct {
 	CacheMaxEntries     int
 	RateLimitRequests   int
 	RateLimitWindow     time.Duration
+	AnonPerDay          int
 	UpstreamHourly      int
 	UpstreamDaily       int
 	UpstreamConcurrency int
@@ -46,6 +47,7 @@ func Load(envFile string) Config {
 		CacheMaxEntries:     getenvInt("CACHE_MAX_ENTRIES", 512),
 		RateLimitRequests:   getenvInt("RATE_LIMIT_REQUESTS", 10),
 		RateLimitWindow:     time.Duration(getenvInt("RATE_LIMIT_WINDOW_SECONDS", 60)) * time.Second,
+		AnonPerDay:          getenvInt("ANON_PROFILES_PER_DAY", 10),
 		UpstreamHourly:      getenvInt("UPSTREAM_HOURLY_BUDGET", 20),
 		UpstreamDaily:       getenvInt("UPSTREAM_DAILY_BUDGET", 100),
 		UpstreamConcurrency: getenvInt("UPSTREAM_CONCURRENCY", 4),
