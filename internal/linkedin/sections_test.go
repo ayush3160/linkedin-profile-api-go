@@ -336,8 +336,10 @@ func TestRolesInheritTheirEmployerFromTheGroupHeader(t *testing.T) {
 		Texts: []string{
 			"Experience",
 			"Keploy", "2 yrs 4 mos", "Bangalore, Karnataka, India",
-			"SWE", "Full-time", "Jun 2025 - Present · 1 yr 4 mos",
-			"SDE Intern", "Internship", "Sep 2024 - Jun 2025 · 10 mos",
+			// Each role carries its own location; that must not be mistaken
+			// for naming an employer, or the group ends a row early.
+			"SWE", "Full-time", "Jun 2025 - Present · 1 yr 4 mos", "Bangalore, Karnataka, India · On-site",
+			"SDE Intern", "Internship", "Sep 2024 - Jun 2025 · 10 mos", "Remote",
 			// A role naming its own employer has left the group.
 			"Full Stack Developer Intern", "Unlock Velocity", "Sep 2023 - Jun 2024 · 10 mos",
 		},
@@ -360,12 +362,16 @@ func TestRolesInheritTheirEmployerFromTheGroupHeader(t *testing.T) {
 	if entities[0].EmploymentType != "Full-time" {
 		t.Errorf("employment type = %q", entities[0].EmploymentType)
 	}
-	if entities[0].Location != "Bangalore, Karnataka, India" {
+	// A role's own location wins over the header's.
+	if entities[0].Location != "Bangalore, Karnataka, India · On-site" {
 		t.Errorf("location = %q", entities[0].Location)
 	}
+	if entities[1].Location != "Remote" {
+		t.Errorf("row 1 location = %q", entities[1].Location)
+	}
 	// The group must not follow a role that named its own employer.
-	if entities[2].Location == "Bangalore, Karnataka, India" {
-		t.Error("group location leaked onto a role outside the group")
+	if entities[2].Location != "" {
+		t.Errorf("row 2 location = %q -- the group's header leaked past its roles", entities[2].Location)
 	}
 }
 

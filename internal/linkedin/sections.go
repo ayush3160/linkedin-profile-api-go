@@ -216,7 +216,12 @@ var bareDuration = regexp.MustCompile(`(?i)^\d+\s+(yrs?|years?|mos?|months?)(\s+
 func namesItsOwnEmployer(lines []string) bool {
 	labels := 0
 	for _, line := range lines {
-		if ParseDates(line) != nil || looksLikeProse(line) || employmentTypes[strings.ToLower(line)] {
+		// A date, a description, an employment type and the role's own
+		// location all describe the role. Only a second *label* means the row
+		// named an employer -- counting the location ended the group a row
+		// early, and the next role lost its employer again.
+		if ParseDates(line) != nil || looksLikeProse(line) ||
+			employmentTypes[strings.ToLower(line)] || LooksLikeLocation(line) {
 			continue
 		}
 		labels++
