@@ -529,7 +529,7 @@ static `CGO_ENABLED=0` binary, so it runs as non-root with no shell and no libc.
 ## Testing
 
 ```bash
-make test     # 84 tests
+make test     # 87 tests
 make race     # same, under the race detector
 make lint     # gofmt + go vet
 ```
@@ -585,6 +585,16 @@ different cards for 1st-degree connections, 2nd/3rd-degree, and out-of-network
 viewers. A 3rd-degree profile may return no contact info and a truncated
 experience list. That is a property of LinkedIn, not of the parser — `meta`
 reports which sections came back so you can tell the difference.
+
+**Densely nested Experience cards still mis-segment some rows.** Several roles
+at one employer render as a header -- company, total span, location -- above
+roles that carry no company of their own; those are grouped back onto their
+employer, and the group ends at the first role naming its own. A profile that
+stacks several such groups, with long descriptions and role titles containing
+commas, still produces a few rows with the title and employer transposed. Every
+entity carries `raw_lines` in page order, so the original is always recoverable,
+and `/raw` shows exactly what arrived. Verified correct on five profiles;
+`jeffweiner08` is the known bad case.
 
 **Row segmentation differs by card, and Experience is the awkward one.** Most
 sections emit one instrumented sub-block per row. The collapsed Experience card

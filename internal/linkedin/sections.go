@@ -101,9 +101,11 @@ var noise = map[string]bool{
 	"img": true, "icon": true, "logobrand": true, "inlineblock": true,
 	"blockquote": true, "center": true, "horizontal": true, "vertical": true,
 	"button": true, "true": true, "false": true,
+	// A badge LinkedIn renders inside a role, not part of the role.
+	"helped me get this job": true,
 }
 
-var noisePrefixes = [...]string{"show all ", "see all ", "view all ", "loading "}
+var noisePrefixes = [...]string{"show all ", "see all ", "view all ", "loading ", "linkedin helped me get"}
 
 // SDUI emits its own i18n plumbing as rendered text: the binding key for a
 // count, the ICU template that formats it, and the locale it resolved in. On
@@ -113,6 +115,11 @@ var (
 	icuTemplate = regexp.MustCompile(`^\{[0-9]+,\s*(plural|number|select)`)
 	localeCode  = regexp.MustCompile(`^[a-z]{2}_[A-Z]{2}$`)
 	bindingKey  = regexp.MustCompile(`^\S+-(count|index|state)$`)
+	// Component ids for lazily expanded text, e.g.
+	// expandable_text_block_auto-component-f63c8fcb-...
+	componentID = regexp.MustCompile(`auto-component-[0-9a-f-]{8,}$`)
+	// Spacing and layout tokens: 7x, flexStart, WIDTH_AND_HEIGHT.
+	styleToken = regexp.MustCompile(`^(?:[0-9]+x|flexStart|flexEnd|iconDisabled|backgroundOffset|isolate|[A-Z]+(?:_[A-Z]+)+)$`)
 )
 
 // IsNoise reports whether a rendered line is UI chrome rather than content.
@@ -127,9 +134,17 @@ func IsNoise(line string) bool {
 		}
 	}
 	trimmed := strings.TrimSpace(line)
-	return icuTemplate.MatchString(trimmed) ||
-		localeCode.MatchString(trimmed) ||
-		(!strings.Contains(trimmed, " ") && bindingKey.MatchString(trimmed))
+	// An ICU template carries spaces; the identifier shapes below never do,
+	// and requiring that keeps real prose out of the noise set.
+	if icuTemplate.MatchString(trimmed) || localeCode.MatchString(trimmed) {
+		return true
+	}
+	if strings.Contains(trimmed, " ") {
+		return false
+	}
+	return bindingKey.MatchString(trimmed) ||
+		componentID.MatchString(trimmed) ||
+		styleToken.MatchString(trimmed)
 }
 
 // CleanLines trims and drops chrome.
@@ -176,15 +191,37 @@ var credentialLine = regexp.MustCompile(`(?i)^credential (id|url)\b|^show creden
 // has -- which keeps a short standalone entry like "Lakeside School" opening
 // its own row.
 func continuesPreviousRow(line string) bool {
+	return LooksLikeLocation(line) || credentialLine.MatchString(line) || looksLikeProse(line)
+}
+
+// looksLikeProse reports whether a line reads as a sentence rather than a
+// label. A title or an employer never does.
+func looksLikeProse(line string) bool {
 	switch {
-	case LooksLikeLocation(line), credentialLine.MatchString(line):
-		return true
 	case strings.HasPrefix(line, "•"), strings.HasPrefix(line, "- "):
 		return true
 	case strings.HasSuffix(line, "."), len([]rune(line)) > 80:
 		return true
 	}
 	return false
+}
+
+// bareDuration matches a span with no dates in it -- "18 yrs 1 mo". LinkedIn
+// renders one under a company name when a member held several roles there,
+// as a header above the individual roles.
+var bareDuration = regexp.MustCompile(`(?i)^\d+\s+(yrs?|years?|mos?|months?)(\s+\d+\s+(mos?|months?))?$`)
+
+// namesItsOwnEmployer reports whether a row carries an employer of its own,
+// rather than inheriting one from a group header.
+func namesItsOwnEmployer(lines []string) bool {
+	labels := 0
+	for _, line := range lines {
+		if ParseDates(line) != nil || looksLikeProse(line) || employmentTypes[strings.ToLower(line)] {
+			continue
+		}
+		labels++
+	}
+	return labels >= 2
 }
 
 // closesRow reports whether a line ends the list row it belongs to.
@@ -306,7 +343,7 @@ func EntityBlocks(section *Block) []*Block {
 // "Confirmation of Internship Offer.pdf" as a job and Licenses report the
 // attachment names instead of the certificates -- while the real content, held
 // in the card's own text, was skipped because these children looked like rows.
-var rowChrome = [...]string{"media-button", "logo-click", "see-media"}
+var rowChrome = [...]string{"media-button", "logo-click", "see-media", "media-roll-up"}
 
 func isRowChrome(name string) bool {
 	lowered := strings.ToLower(name)
@@ -403,8 +440,11 @@ func ParseEntity(block *Block) (model.Entity, bool) {
 	}
 	if len(remaining) > 0 {
 		subtitle, employment := SplitEmploymentType(remaining[0])
-		// Only consume as a subtitle if it is not obviously a location.
-		if !(LooksLikeLocation(subtitle) && len(remaining) == 1) {
+		// Only consume as a subtitle if it is not obviously a location, and
+		// not a sentence -- a grouped role whose employer lives in the card
+		// header is followed straight by its description, which would
+		// otherwise be read as the company name.
+		if !looksLikeProse(subtitle) && !(LooksLikeLocation(subtitle) && len(remaining) == 1) {
 			entity.Subtitle, entity.EmploymentType = subtitle, employment
 			remaining = remaining[1:]
 		}
@@ -476,17 +516,54 @@ func parseFlatEntities(section *Block) []model.Entity {
 		return nil
 	}
 
-	var rows [][]string
-	current := make([]string, 0, 4)
+	// Several roles at one employer render as a header -- company name, total
+	// span, location -- followed by the roles themselves, which then carry no
+	// company of their own. Read as flat rows the header became an entity
+	// titled with the company and subtitled "18 yrs 1 mo", and every role under
+	// it lost its employer.
+	type row struct {
+		lines    []string
+		company  string
+		location string
+	}
+	var (
+		rows      []row
+		current   = make([]string, 0, 4)
+		group     string
+		groupLoc  string
+		afterHead bool
+	)
 	for _, line := range lines {
+		if bareDuration.MatchString(line) && len(current) == 1 {
+			group, groupLoc, afterHead = current[0], "", true
+			current = current[:0]
+			continue
+		}
+		// The header's own location sits between the span and the first role,
+		// where it would otherwise open a row and be read as a job title.
+		if afterHead {
+			if LooksLikeLocation(line) {
+				groupLoc = line
+				continue
+			}
+			afterHead = false
+		}
 		current = append(current, line)
 		if closesRow(line) {
-			rows = append(rows, current)
+			// The group covers only the roles that follow its header. A row
+			// that names its own employer has left it, and leaves before it is
+			// recorded -- otherwise it keeps the header's location. Without
+			// this the header's company was also stamped onto every later
+			// role, which is worse than not grouping at all.
+			if group != "" && namesItsOwnEmployer(current) {
+				group, groupLoc = "", ""
+			}
+			rows = append(rows, row{lines: current, company: group, location: groupLoc})
 			current = make([]string, 0, 4)
 		}
 	}
 	if len(current) > 0 {
-		rows = append(rows, current)
+		rows = append(rows, row{lines: current, company: group, location: groupLoc})
 	}
 
 	// A date closes a row, but location, description and credential lines are
@@ -495,15 +572,15 @@ func parseFlatEntities(section *Block) []model.Entity {
 	// Nadella's Microsoft location became the job title of his next role, and a
 	// job description became a job of its own. Hand those lines back.
 	for i := 1; i < len(rows); i++ {
-		for len(rows[i]) > 0 && continuesPreviousRow(rows[i][0]) {
-			rows[i-1] = append(rows[i-1], rows[i][0])
-			rows[i] = rows[i][1:]
+		for len(rows[i].lines) > 0 && continuesPreviousRow(rows[i].lines[0]) {
+			rows[i-1].lines = append(rows[i-1].lines, rows[i].lines[0])
+			rows[i].lines = rows[i].lines[1:]
 		}
 	}
 	kept := rows[:0]
-	for _, row := range rows {
-		if len(row) > 0 {
-			kept = append(kept, row)
+	for _, r := range rows {
+		if len(r.lines) > 0 {
+			kept = append(kept, r)
 		}
 	}
 	rows = kept
@@ -517,10 +594,24 @@ func parseFlatEntities(section *Block) []model.Entity {
 	}
 
 	out := make([]model.Entity, 0, len(rows))
-	for i, row := range rows {
-		entity, ok := ParseEntity(&Block{Texts: row})
+	for i, r := range rows {
+		entity, ok := ParseEntity(&Block{Texts: r.lines})
 		if !ok || (entity.Title == "" && entity.Subtitle == "") {
 			continue
+		}
+		// A grouped role carries its own title and, at most, an employment
+		// type. The employer lives in the header, so it belongs in the
+		// subtitle -- and an employment type sitting there is not a company.
+		if r.company != "" {
+			if entity.Subtitle == "" {
+				entity.Subtitle = r.company
+			} else if employmentTypes[strings.ToLower(entity.Subtitle)] {
+				entity.EmploymentType = entity.Subtitle
+				entity.Subtitle = r.company
+			}
+		}
+		if entity.Location == "" && r.location != "" {
+			entity.Location = r.location
 		}
 		if i < len(logos) {
 			logo := ToModelImage(logos[i])

@@ -324,3 +324,102 @@ func TestStyleTokensAreNotContent(t *testing.T) {
 		}
 	}
 }
+
+// Several roles at one employer render as a header -- company, total span,
+// location -- followed by roles that carry no company of their own. Read flat,
+// the header became an entity titled with the company and subtitled with the
+// span, and every role under it lost its employer.
+func TestRolesInheritTheirEmployerFromTheGroupHeader(t *testing.T) {
+	section := &Block{
+		Name:     "profile-card-experience",
+		Headings: []string{"Experience"},
+		Texts: []string{
+			"Experience",
+			"Keploy", "2 yrs 4 mos", "Bangalore, Karnataka, India",
+			"SWE", "Full-time", "Jun 2025 - Present · 1 yr 4 mos",
+			"SDE Intern", "Internship", "Sep 2024 - Jun 2025 · 10 mos",
+			// A role naming its own employer has left the group.
+			"Full Stack Developer Intern", "Unlock Velocity", "Sep 2023 - Jun 2024 · 10 mos",
+		},
+	}
+	entities := ParseEntities(section)
+	if len(entities) != 3 {
+		t.Fatalf("entities = %d, want 3: %+v", len(entities), entities)
+	}
+	for i, want := range []struct{ title, company string }{
+		{"SWE", "Keploy"},
+		{"SDE Intern", "Keploy"},
+		{"Full Stack Developer Intern", "Unlock Velocity"},
+	} {
+		if entities[i].Title != want.title || entities[i].Subtitle != want.company {
+			t.Errorf("row %d = %q / %q, want %q / %q", i, entities[i].Title, entities[i].Subtitle, want.title, want.company)
+		}
+	}
+	// The employment type is not a company, and the header's location belongs
+	// to the roles under it.
+	if entities[0].EmploymentType != "Full-time" {
+		t.Errorf("employment type = %q", entities[0].EmploymentType)
+	}
+	if entities[0].Location != "Bangalore, Karnataka, India" {
+		t.Errorf("location = %q", entities[0].Location)
+	}
+	// The group must not follow a role that named its own employer.
+	if entities[2].Location == "Bangalore, Karnataka, India" {
+		t.Error("group location leaked onto a role outside the group")
+	}
+}
+
+// Media roll-ups and the layout tokens inside them are chrome. They were read
+// as list rows, producing jobs titled "7x" with a subtitle of "flexStart".
+func TestLayoutChromeNeverBecomesAnEntity(t *testing.T) {
+	section := &Block{
+		Name:     "profile-card-experience",
+		Headings: []string{"Experience"},
+		Texts:    []string{"Experience", "Founding Partner", "Next Play Ventures", "Jul 2020 - Present · 6 yrs"},
+		Children: []*Block{
+			{Name: "experience-media-roll-up", Texts: []string{"7x", "flexStart", "iconDisabled", "isolate", "+5"}},
+			{Name: "experience-see-media-button", Texts: []string{"7x", "flexStart", "WIDTH_AND_HEIGHT"}},
+		},
+	}
+	entities := ParseEntities(section)
+	if len(entities) != 1 {
+		t.Fatalf("entities = %d, want 1: %+v", len(entities), entities)
+	}
+	if entities[0].Title != "Founding Partner" || entities[0].Subtitle != "Next Play Ventures" {
+		t.Errorf("row = %q / %q", entities[0].Title, entities[0].Subtitle)
+	}
+	for _, token := range []string{"7x", "flexStart", "iconDisabled", "isolate", "WIDTH_AND_HEIGHT"} {
+		if !IsNoise(token) {
+			t.Errorf("IsNoise(%q) = false", token)
+		}
+	}
+	// An ICU template carries spaces and must still be recognised.
+	if !IsNoise("{0,plural,0#|one# ({0,number,integer})}") {
+		t.Error("ICU template should stay noise")
+	}
+}
+
+// A grouped role is followed straight by its description, which would be read
+// as the company name it does not have.
+func TestADescriptionIsNeverTheEmployer(t *testing.T) {
+	section := &Block{
+		Name:     "profile-card-experience",
+		Headings: []string{"Experience"},
+		Texts: []string{
+			"Experience",
+			"Next Play Ventures", "18 yrs 1 mo", "San Francisco Bay Area",
+			"Founding Partner", "Jul 2020 - Present · 6 yrs 3 mos",
+			"Our mission is to coach and invest in entrepreneurial leaders building purpose-driven organizations.",
+		},
+	}
+	entities := ParseEntities(section)
+	if len(entities) != 1 {
+		t.Fatalf("entities = %d, want 1: %+v", len(entities), entities)
+	}
+	if entities[0].Subtitle != "Next Play Ventures" {
+		t.Errorf("subtitle = %q, want the employer, not the description", entities[0].Subtitle)
+	}
+	if !strings.Contains(entities[0].Description, "Our mission") {
+		t.Errorf("description = %q", entities[0].Description)
+	}
+}
